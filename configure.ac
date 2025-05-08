@@ -214,6 +214,7 @@ ARG_ENABL_SET([eap-tnc],        [enable EAP TNC trusted network connect module.]
 ARG_ENABL_SET([eap-dynamic],    [enable dynamic EAP proxy module.])
 ARG_ENABL_SET([eap-radius],     [enable RADIUS proxy authentication module.])
 ARG_ENABL_SET([ext-auth],       [enable plugin calling an external authorization script.])
+ARG_ENABL_SET([extsock],        [enable External Socket Plugin for Charon.])
 ARG_ENABL_SET([ipseckey],       [enable IPSECKEY authentication plugin.])
 ARG_ENABL_SET([keychain],       [enables OS X Keychain Services credential set.])
 ARG_ENABL_SET([pkcs11],         [enables the PKCS11 token support plugin.])
