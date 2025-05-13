@@ -13,15 +13,19 @@
 #include <unistd.h>      // 유닉스 표준 함수 (read, write, close, unlink 등)
 #include <stdio.h>       // 표준 입출력 함수 (snprintf 등)
 #include <string.h>      // 문자열 처리 함수 (strlen, strncmp, strncpy, memset 등)
+#include <utils/debug.h> // For LEVEL_INFO and other debug levels
 
 // strongSwan 내부의 IPsec 설정, SA 관리, Task, Kernel 이벤트 관련 헤더 파일들을 포함합니다.
 #include <config/ike_cfg.h>       // IKE 설정 (ike_cfg_t) 관련
 #include <config/child_cfg.h>     // CHILD_SA 설정 (child_cfg_t) 관련
 #include <sa/ike_sa_manager.h>    // IKE_SA 관리자 관련
 #include <sa/ike_sa.h>            // IKE_SA 객체 관련
-#include <sa/tasks/dpd.h>         // DPD(Dead Peer Detection) Task 관련
+#include <sa/ikev2/tasks/ike_dpd.h>         // DPD(Dead Peer Detection) Task 관련
 #include <kernel/kernel_listener.h> // Kernel 이벤트 리스너 (SAD/SPD 변경 감지) 관련
-#include <utils/host.h>           // 주소(host_t)를 문자열로 변환하는 유틸리티 관련
+#include <networking/host.h>           // 주소(host_t)를 문자열로 변환하는 유틸리티 관련
+#include <credentials/sets/mem_cred.h> // For mem_cred_t
+#include <credentials/credential_manager.h> // For lib->credmgr
+#include <control/controller.h> // For charon->controller->initiate
 
 // 유닉스 도메인 소켓 파일의 경로를 정의합니다. 외부 프로그램과 통신 채널로 사용됩니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
@@ -29,9 +33,13 @@
 // 플러그인의 내부 상태를 나타내는 private 구조체의 전방 선언입니다.
 typedef struct private_extsock_plugin_t private_extsock_plugin_t;
 
+// Forward declaration for the destroy function
+static void extsock_plugin_destroy(private_extsock_plugin_t *this);
+
 // 플러그인의 내부 상태를 저장하는 구조체입니다.
 struct private_extsock_plugin_t {
     plugin_t public;                // strongSwan 플러그인 시스템에 등록될 공개 인터페이스 구조체입니다.
+    mem_cred_t *creds;              // Memory credential set for this plugin
     int sock_fd;                    // 외부 프로그램과의 통신을 위한 유닉스 도메인 소켓의 파일 디스크립터입니다.
     thread_t *thread;               // 외부 프로그램으로부터 명령을 수신하는 작업을 처리할 스레드 객체입니다.
     bool running;                   // 소켓 수신 스레드가 현재 실행 중인지 여부를 나타내는 플래그입니다.
@@ -40,7 +48,7 @@ struct private_extsock_plugin_t {
 };
 
 // 외부 프로그램에 이벤트(JSON 형식의 문자열)를 전송하는 함수입니다.
-static void send_event_to_external(const char *event_json)
+/*static void send_event_to_external(const char *event_json)
 {
     // 유닉스 도메인 소켓을 생성합니다. (AF_UNIX: 로컬 통신, SOCK_STREAM: TCP와 유사한 스트림 방식)
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -60,10 +68,10 @@ static void send_event_to_external(const char *event_json)
     }
     // 소켓 파일 디스크립터를 닫습니다.
     close(fd);
-}
+}*/
 
 // SAD (Security Association Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
-static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id, kernel_ipsec_sa_t *sa)
+/*static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id, kernel_ipsec_sa_t *sa)
 {
     // 생성될 JSON 문자열을 저장하기 위한 버퍼입니다. 크기는 예상되는 최대 길이를 고려하여 설정합니다.
     char buf[512];
@@ -96,11 +104,11 @@ static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id, ker
     DESTROY_IF(dst_host); // dst_host가 NULL이 아니면 파괴합니다.
 
     // 최종적으로 생성된 JSON 문자열을 외부 프로그램으로 전송합니다.
-    send_event_to_external(buf);
-}
+    //send_event_to_external(buf); // Temporarily commented out
+}*/
 
 // SPD (Security Policy Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
-static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id, kernel_ipsec_policy_t *policy)
+/*static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id, kernel_ipsec_policy_t *policy)
 {
     // 생성될 JSON 문자열을 저장하기 위한 버퍼입니다.
     char buf[512];
@@ -137,20 +145,24 @@ static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id,
     DESTROY_IF(dst_host);
 
     // 최종적으로 생성된 JSON 문자열을 외부 프로그램으로 전송합니다.
-    send_event_to_external(buf);
-}
+    //send_event_to_external(buf); // Temporarily commented out
+}*/
 
 // JSON 문자열을 파싱하여 strongSwan에 IKE/CHILD 설정을 동적으로 추가/적용하는 함수입니다.
-static void apply_ipsec_config(const char *json)
+static void apply_ipsec_config(private_extsock_plugin_t *plugin_this, const char *json)
 {
     cJSON *root = cJSON_Parse(json);
     if (!root) {
         DBG1(DBG_LIB, "Failed to parse JSON for IPsec config");
         return;
     }
-    const char *conn_name = cJSON_GetObjectItem(root, "name")->valuestring;
-    const char *local = cJSON_GetObjectItem(root, "local")->valuestring;
-    const char *remote = cJSON_GetObjectItem(root, "remote")->valuestring;
+    const char *conn_name_const = cJSON_GetObjectItem(root, "name")->valuestring;
+    const char *local_const = cJSON_GetObjectItem(root, "local")->valuestring;
+    const char *remote_const = cJSON_GetObjectItem(root, "remote")->valuestring;
+
+    char *conn_name = strdup(conn_name_const);
+    char *local_addr = strdup(local_const);
+    char *remote_addr = strdup(remote_const);
 
     // IKE/ESP proposal 파싱
     const char *ike_proposal = NULL, *esp_proposal = NULL;
@@ -184,8 +196,8 @@ static void apply_ipsec_config(const char *json)
 
     // IKE 설정 생성
     ike_cfg_create_t ike = {
-        .version = IKEV2, .local = local, .local_port = 500,
-        .remote = remote, .remote_port = 500, .no_certreq = FALSE,
+        .version = IKEV2, .local = local_addr, .local_port = 500,
+        .remote = remote_addr, .remote_port = 500, .no_certreq = FALSE,
     };
     ike_cfg_t *ike_cfg = ike_cfg_create(&ike);
     if (ike_proposal) {
@@ -208,47 +220,68 @@ static void apply_ipsec_config(const char *json)
         const char *auth_type = cJSON_GetObjectItem(auth_json, "type")->valuestring;
         if (strcmp(auth_type, "cert") == 0) {
             // 인증서 기반 인증
-            const char *local_id = cJSON_GetObjectItem(auth_json, "local_id")->valuestring;
-            const char *remote_id = cJSON_GetObjectItem(auth_json, "remote_id")->valuestring;
+            const char *local_id_const = cJSON_GetObjectItem(auth_json, "local_id")->valuestring;
+            const char *remote_id_const = cJSON_GetObjectItem(auth_json, "remote_id")->valuestring;
             const char *cert_file = cJSON_GetObjectItem(auth_json, "cert_file")->valuestring;
             const char *key_file = cJSON_GetObjectItem(auth_json, "key_file")->valuestring;
+
+            char *local_id_str = strdup(local_id_const);
+            char *remote_id_str = strdup(remote_id_const);
+
             // 인증서/키를 strongSwan credential manager에 등록
             certificate_t *cert = lib->creds->create(lib->creds, CRED_CERTIFICATE, CERT_X509, BUILD_FROM_FILE, cert_file, BUILD_END);
             private_key_t *key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY, BUILD_FROM_FILE, key_file, BUILD_END);
             if (cert) {
-                charon->credentials->add_cert(charon->credentials, cert);
+                plugin_this->creds->add_cert_ref(plugin_this->creds, TRUE, cert);
             }
             if (key) {
-                charon->credentials->add_key(charon->credentials, key);
+                plugin_this->creds->add_key(plugin_this->creds, key);
             }
             // 로컬 인증 설정
             auth_cfg_t *auth = auth_cfg_create();
             auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
-            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id));
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id_str));
             peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
             // 원격 인증 설정
             auth = auth_cfg_create();
             auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
-            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id));
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id_str));
             peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
+            free(local_id_str);
+            free(remote_id_str);
         } else if (strcmp(auth_type, "psk") == 0) {
             // PSK 기반 인증
             const char *psk = cJSON_GetObjectItem(root, "psk")->valuestring;
-            const char *local_id = cJSON_GetObjectItem(auth_json, "local_id") ? cJSON_GetObjectItem(auth_json, "local_id")->valuestring : local;
-            const char *remote_id = cJSON_GetObjectItem(auth_json, "remote_id") ? cJSON_GetObjectItem(auth_json, "remote_id")->valuestring : remote;
+            const char *local_id_const = cJSON_GetObjectItem(auth_json, "local_id") ? cJSON_GetObjectItem(auth_json, "local_id")->valuestring : local_const;
+            const char *remote_id_const = cJSON_GetObjectItem(auth_json, "remote_id") ? cJSON_GetObjectItem(auth_json, "remote_id")->valuestring : remote_const;
+
+            char *local_id_str = strdup(local_id_const);
+            char *remote_id_str = strdup(remote_id_const);
+
             // 로컬 인증 설정
             auth_cfg_t *auth = auth_cfg_create();
             auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id));
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id_str));
             peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
             // 원격 인증 설정
             auth = auth_cfg_create();
             auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id));
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id_str));
             peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
             // PSK 등록
-            shared_key_t *key = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
-            charon->credentials->add_shared(charon->credentials, key);
+            identification_t *local_id_obj_psk = identification_create_from_string(local_id_str);
+            identification_t *remote_id_obj_psk = identification_create_from_string(remote_id_str);
+            shared_key_t *psk_obj = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
+            if (local_id_obj_psk && remote_id_obj_psk && psk_obj) {
+                plugin_this->creds->add_shared(plugin_this->creds, psk_obj, local_id_obj_psk, remote_id_obj_psk, NULL);
+            } else {
+                DESTROY_IF(local_id_obj_psk);
+                DESTROY_IF(remote_id_obj_psk);
+                DESTROY_IF(psk_obj);
+                DBG1(DBG_LIB, "Failed to create objects for PSK sharing (auth_json)");
+            }
+            free(local_id_str);
+            free(remote_id_str);
         }
     } else {
         // 기본: PSK 방식 (호환성)
@@ -256,16 +289,25 @@ static void apply_ipsec_config(const char *json)
         // 로컬 인증 설정
         auth_cfg_t *auth = auth_cfg_create();
         auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local));
+        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_addr));
         peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
         // 원격 인증 설정
         auth = auth_cfg_create();
         auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote));
+        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_addr));
         peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
         // PSK 등록
-        shared_key_t *key = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
-        charon->credentials->add_shared(charon->credentials, key);
+        identification_t *local_obj_psk_default = identification_create_from_string(local_addr);
+        identification_t *remote_obj_psk_default = identification_create_from_string(remote_addr);
+        shared_key_t *psk_obj_default = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
+        if (local_obj_psk_default && remote_obj_psk_default && psk_obj_default) {
+            plugin_this->creds->add_shared(plugin_this->creds, psk_obj_default, local_obj_psk_default, remote_obj_psk_default, NULL);
+        } else {
+            DESTROY_IF(local_obj_psk_default);
+            DESTROY_IF(remote_obj_psk_default);
+            DESTROY_IF(psk_obj_default);
+            DBG1(DBG_LIB, "Failed to create objects for PSK sharing (default)");
+        }
     }
 
     // 여러 CHILD_SA 지원 (children: array)
@@ -274,14 +316,19 @@ static void apply_ipsec_config(const char *json)
         int n = cJSON_GetArraySize(children_json);
         for (int i = 0; i < n; i++) {
             cJSON *child_json = cJSON_GetArrayItem(children_json, i);
-            const char *child_name = cJSON_GetObjectItem(child_json, "name")->valuestring;
-            const char *local_ts = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
-            const char *remote_ts = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+            const char *child_name_const = cJSON_GetObjectItem(child_json, "name")->valuestring;
+            const char *local_ts_const = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
+            const char *remote_ts_const = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+
+            char *child_name_str = strdup(child_name_const);
+            char *local_ts_str = strdup(local_ts_const);
+            char *remote_ts_str = strdup(remote_ts_const);
+
             child_cfg_create_t child_cfg_data = {
                 .mode = MODE_TUNNEL,
                 .lifetime = { .time = { .life = 3600, .rekey = 3000, .jitter = 300 } }
             };
-            child_cfg_t *child_cfg = child_cfg_create(child_name, &child_cfg_data);
+            child_cfg_t *child_cfg = child_cfg_create(child_name_str, &child_cfg_data);
             // ESP proposal 적용
             if (esp_proposal) {
                 child_cfg->add_proposal(child_cfg, proposal_create_from_string(PROTO_ESP, esp_proposal));
@@ -289,50 +336,86 @@ static void apply_ipsec_config(const char *json)
                 child_cfg->add_proposal(child_cfg, proposal_create_default_aead(PROTO_ESP));
                 child_cfg->add_proposal(child_cfg, proposal_create_default(PROTO_ESP));
             }
-            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts, 0, 0, 65535));
-            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts_str, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts_str, 0, 0, 65535));
             peer_cfg->add_child_cfg(peer_cfg, child_cfg);
+
+            free(child_name_str);
+            free(local_ts_str);
+            free(remote_ts_str);
         }
     } else {
         // 기존 단일 child 처리 (child: object)
         cJSON *child_json = cJSON_GetObjectItem(root, "child");
         if (child_json && cJSON_IsObject(child_json)) {
-            const char *child_name = cJSON_GetObjectItem(child_json, "name")->valuestring;
-            const char *local_ts = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
-            const char *remote_ts = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+            const char *child_name_const = cJSON_GetObjectItem(child_json, "name")->valuestring;
+            const char *local_ts_const = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
+            const char *remote_ts_const = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+
+            char *child_name_str = strdup(child_name_const);
+            char *local_ts_str = strdup(local_ts_const);
+            char *remote_ts_str = strdup(remote_ts_const);
+
             child_cfg_create_t child_cfg_data = {
                 .mode = MODE_TUNNEL,
                 .lifetime = { .time = { .life = 3600, .rekey = 3000, .jitter = 300 } }
             };
-            child_cfg_t *child_cfg = child_cfg_create(child_name, &child_cfg_data);
+            child_cfg_t *child_cfg = child_cfg_create(child_name_str, &child_cfg_data);
             if (esp_proposal) {
                 child_cfg->add_proposal(child_cfg, proposal_create_from_string(PROTO_ESP, esp_proposal));
             } else {
                 child_cfg->add_proposal(child_cfg, proposal_create_default_aead(PROTO_ESP));
                 child_cfg->add_proposal(child_cfg, proposal_create_default(PROTO_ESP));
             }
-            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts, 0, 0, 65535));
-            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts_str, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts_str, 0, 0, 65535));
             peer_cfg->add_child_cfg(peer_cfg, child_cfg);
+
+            free(child_name_str);
+            free(local_ts_str);
+            free(remote_ts_str);
         }
     }
 
-    charon->backends->add_peer_cfg(charon->backends, peer_cfg);
-    DBG1(DBG_LIB, "IPsec config applied successfully: %s", conn_name);
+    child_cfg_t *child_cfg_first = NULL;
+    enumerator_t *enumerator = peer_cfg->create_child_cfg_enumerator(peer_cfg);
+    if (enumerator->enumerate(enumerator, &child_cfg_first)) {
+        // child_cfg_first is obtained, get a reference if initiate needs its own
+        // For controller->initiate, it manages references internally.
+    }
+    enumerator->destroy(enumerator);
+
+    status_t status = charon->controller->initiate(charon->controller, peer_cfg,
+                               child_cfg_first, /* child_cfg_first can be NULL */
+                               controller_cb_empty, NULL,
+                               0, /* Temporarily using 0 for log level */
+                               0, FALSE);
+    if (status == SUCCESS) {
+        DBG1(DBG_LIB, "IPsec config applied and SA initiated successfully: %s", conn_name);
+    } else {
+        DBG1(DBG_LIB, "Failed to initiate SA for %s, status: %d", conn_name, status);
+        // peer_cfg might need explicit destruction if initiate did not consume it
+        // However, controller's job usually handles this.
+        // If child_cfg_first was ref'd, it might also need release here on failure.
+    }
+    free(conn_name);
+    free(local_addr);
+    free(remote_addr);
     cJSON_Delete(root);
 }
 
 // 외부의 요청에 따라 특정 IKE_SA에 대해 DPD (Dead Peer Detection) Task를 시작하는 함수입니다.
-static void start_dpd(const char *ike_name)
+static void start_dpd(const char *ike_name_const)
 {
+    char *ike_name = strdup(ike_name_const);
     // 주어진 이름으로 IKE_SA를 찾습니다. (IKEv2 SA만 대상으로 함)
     ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
-        charon->ike_sa_manager, ike_name, IKEV2, NULL);
+        charon->ike_sa_manager, ike_name, FALSE);
 
     // IKE_SA를 찾았으면
     if (ike_sa) {
         // DPD를 시작하는 Task (dpd_initiator_create)를 생성합니다.
-        task_t *dpd_task = (task_t*)dpd_initiator_create();
+        task_t *dpd_task = (task_t*)ike_dpd_create(TRUE);
         // 생성된 DPD Task를 해당 IKE_SA의 작업 큐에 추가합니다.
         ike_sa->queue_task(ike_sa, dpd_task);
         // IKE_SA 사용이 끝났으므로 참조 카운터를 감소시킵니다.
@@ -343,6 +426,7 @@ static void start_dpd(const char *ike_name)
         // 해당 이름의 IKE_SA를 찾지 못했으면 에러 로그를 출력합니다.
         DBG1(DBG_LIB, "IKE_SA not found for DPD: %s", ike_name);
     }
+    free(ike_name);
 }
 
 //-------------------- SAD/SPD 이벤트 hook 콜백 함수들 --------------------
@@ -354,14 +438,14 @@ static void start_dpd(const char *ike_name)
  * @param sa 추가된 SA의 상세 정보 (암호화 키, 알고리즘 등)를 담고 있는 구조체입니다.
  * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
  */
-static bool sad_add(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id, kernel_ipsec_sa_t *sa)
+/*static bool sad_add(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id, kernel_ipsec_sa_t *sa)
 {
     // "SAD_ADD" 이벤트 타입과 함께 SA 식별자 및 상세 정보를 JSON으로 변환하여 외부로 전송합니다.
     // sa 매개변수는 여기서는 사용되지 않지만, 필요시 SA의 더 상세한 정보를 추출하는 데 사용할 수 있습니다.
-    send_sad_event("SAD_ADD", id, sa);
+    //send_sad_event("SAD_ADD", id, sa); // Temporarily commented out
     // 이벤트 처리가 성공적으로 완료되었음을 strongSwan 커널에 알립니다.
     return TRUE;
-}
+}*/
 
 /**
  * SAD에서 SA가 삭제될 때 호출되는 콜백 함수입니다.
@@ -369,14 +453,14 @@ static bool sad_add(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id, kerne
  * @param id 삭제된 SA의 식별자 정보를 담고 있는 구조체입니다.
  * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
  */
-static bool sad_delete(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id)
+/*static bool sad_delete(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id)
 {
     // "SAD_DELETE" 이벤트 타입과 함께 SA 식별자 정보를 JSON으로 변환하여 외부로 전송합니다.
     // SA가 이미 삭제된 후이므로, sa 객체는 NULL로 전달합니다.
-    send_sad_event("SAD_DELETE", id, NULL);
+    //send_sad_event("SAD_DELETE", id, NULL); // Temporarily commented out
     // 이벤트 처리가 성공적으로 완료되었음을 알립니다.
     return TRUE;
-}
+}*/
 
 /**
  * SPD (Security Policy Database)에 새로운 정책이 추가될 때 호출되는 콜백 함수입니다.
@@ -385,14 +469,14 @@ static bool sad_delete(kernel_listener_t *listener, kernel_ipsec_sa_id_t *id)
  * @param policy 추가된 정책의 상세 정보 (적용 규칙, 우선순위 등)를 담고 있는 구조체입니다.
  * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
  */
-static bool spd_add(kernel_listener_t *listener, kernel_ipsec_policy_id_t *id, kernel_ipsec_policy_t *policy)
+/*static bool spd_add(kernel_listener_t *listener, kernel_ipsec_policy_id_t *id, kernel_ipsec_policy_t *policy)
 {
     // "SPD_ADD" 이벤트 타입과 함께 정책 식별자 및 상세 정보를 JSON으로 변환하여 외부로 전송합니다.
     // policy 매개변수는 여기서는 사용되지 않지만, 필요시 정책의 더 상세한 정보를 추출하는 데 사용할 수 있습니다.
-    send_spd_event("SPD_ADD", id, policy);
+    //send_spd_event("SPD_ADD", id, policy); // Temporarily commented out
     // 이벤트 처리가 성공적으로 완료되었음을 알립니다.
     return TRUE;
-}
+}*/
 
 /**
  * SPD에서 정책이 삭제될 때 호출되는 콜백 함수입니다.
@@ -400,47 +484,47 @@ static bool spd_add(kernel_listener_t *listener, kernel_ipsec_policy_id_t *id, k
  * @param id 삭제된 정책의 식별자 정보를 담고 있는 구조체입니다.
  * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
  */
-static bool spd_delete(kernel_listener_t *listener, kernel_ipsec_policy_id_t *id)
+/*static bool spd_delete(kernel_listener_t *listener, kernel_ipsec_policy_id_t *id)
 {
     // "SPD_DELETE" 이벤트 타입과 함께 정책 식별자 정보를 JSON으로 변환하여 외부로 전송합니다.
     // 정책이 이미 삭제된 후이므로, policy 객체는 NULL로 전달합니다.
-    send_spd_event("SPD_DELETE", id, NULL);
+    //send_spd_event("SPD_DELETE", id, NULL); // Temporarily commented out
     // 이벤트 처리가 성공적으로 완료되었음을 알립니다.
     return TRUE;
-}
+}*/
 
 /**
  * SAD/SPD 변경 이벤트를 감지하기 위한 kernel_listener_t 객체를 생성하고 등록하는 함수입니다.
  * @param this 플러그인의 내부 상태를 저장하는 private_extsock_plugin_t 구조체에 대한 포인터입니다.
  */
-static void register_kernel_listener(private_extsock_plugin_t *this)
+/*static void register_kernel_listener(private_extsock_plugin_t *this)
 {
     // SAD/SPD 이벤트 발생 시 호출될 콜백 함수들을 지정하여 kernel_listener_t 객체를 생성합니다.
     // 사용하지 않는 이벤트 콜백은 NULL로 설정합니다.
-    this->listener = kernel_listener_create(
-        sad_add, sad_delete, spd_add, spd_delete, // 사용할 콜백 함수들
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL // 사용하지 않는 콜백들
-    );
+    //this->listener = kernel_listener_create(
+    //    sad_add, sad_delete, spd_add, spd_delete, // 사용할 콜백 함수들
+    //    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL // 사용하지 않는 콜백들
+    //);
     // 생성된 리스너 객체를 strongSwan 커널 인터페이스에 추가하여 이벤트 수신을 시작합니다.
-    charon->kernel->add_listener(charon->kernel, this->listener);
-}
+    //charon->kernel->add_listener(charon->kernel, this->listener);
+}*/
 
 /**
  * 등록된 kernel_listener_t 객체를 해제하고 strongSwan 커널에서 제거하는 함수입니다.
  * @param this 플러그인의 내부 상태를 저장하는 private_extsock_plugin_t 구조체에 대한 포인터입니다.
  */
-static void unregister_kernel_listener(private_extsock_plugin_t *this)
+/*static void unregister_kernel_listener(private_extsock_plugin_t *this)
 {
     // 리스너 객체가 유효한 경우(NULL이 아닌 경우)에만 해제 작업을 수행합니다.
     if (this->listener) {
         // strongSwan 커널 인터페이스에서 리스너를 제거합니다.
-        charon->kernel->remove_listener(charon->kernel, this->listener);
+        //charon->kernel->remove_listener(charon->kernel, this->listener);
         // 리스너 객체 자체의 메모리를 해제합니다.
-        this->listener->destroy(this->listener);
+        //this->listener->destroy(this->listener); // API 변경 가능성
         // 해제된 리스너 포인터를 NULL로 설정하여 dangling pointer 문제를 방지합니다.
-        this->listener = NULL;
+        //this->listener = NULL;
     }
-}
+}*/
 
 //-------------------- 소켓을 통해 수신된 외부 명령 처리 함수 --------------------
 static void handle_external_command(private_extsock_plugin_t *this, char *cmd)
@@ -453,7 +537,7 @@ static void handle_external_command(private_extsock_plugin_t *this, char *cmd)
     // 수신된 명령 문자열이 "APPLY_CONFIG "로 시작하는지 비교합니다.
     else if (strncmp(cmd, "APPLY_CONFIG ", 13) == 0) {
         // "APPLY_CONFIG " 다음의 문자열(JSON 설정)을 apply_ipsec_config 함수에 전달합니다.
-        apply_ipsec_config(cmd + 13);
+        apply_ipsec_config(this, cmd + 13);
     }
     // 여기에 다른 종류의 외부 명령을 처리하는 로직을 추가할 수 있습니다.
 }
@@ -551,6 +635,18 @@ static void* socket_thread(private_extsock_plugin_t *this)
 
 //-------------------- 플러그인 생성 및 파괴 함수 --------------------
 
+// Plugin metadata functions
+static char* extsock_plugin_get_name(plugin_t* plugin) {
+    (void)plugin; // Unused
+    return "extsock";
+}
+
+static int extsock_plugin_get_features(plugin_t* plugin, plugin_feature_t *features[]) {
+    (void)plugin; // Unused
+    *features = NULL;
+    return 0;
+}
+
 /**
  * 플러그인이 strongSwan에 로드될 때 호출되는 생성자 함수입니다.
  * 플러그인의 초기화 작업을 수행합니다.
@@ -571,14 +667,22 @@ plugin_t* extsock_plugin_create()
     // (void*) 캐스팅은 함수 포인터 타입 일치를 위함입니다.
     this->public.destroy = (void*)extsock_plugin_destroy;
     // 플러그인 이름을 설정합니다 (디버깅 및 로깅에 사용됨).
-    this->public.plugin.name = "extsock";
-    // 플러그인 버전을 설정합니다.
-    this->public.plugin.version = "1.0";
-    // 플러그인 설명을 설정합니다.
-    this->public.plugin.description = "External socket communication plugin";
+    this->public.get_name = extsock_plugin_get_name;
+    // 플러그인 기능 함수를 설정합니다.
+    this->public.get_features = extsock_plugin_get_features;
 
     // SAD/SPD 변경 이벤트를 수신하기 위해 커널 리스너를 등록합니다.
-    register_kernel_listener(this);
+    //register_kernel_listener(this); // Temporarily commented out
+
+    this->creds = mem_cred_create();
+    if (this->creds) {
+        lib->credmgr->add_set(lib->credmgr, &this->creds->set);
+    } else {
+        DBG1(DBG_LIB, "Failed to create mem_cred_t for extsock plugin");
+        // Consider proper error handling if mem_cred_create fails
+        free(this); // Free allocated memory for the plugin struct
+        return NULL; // Indicate plugin creation failure
+    }
 
     // 외부 명령 수신을 위한 소켓 스레드를 생성하고 시작합니다.
     // thread_create는 스레드 메인 함수(socket_thread)와 그 함수에 전달될 인자(this)를 받습니다.
@@ -587,7 +691,12 @@ plugin_t* extsock_plugin_create()
     if (!this->thread) {
         DBG1(DBG_LIB, "Failed to create socket listener thread");
         // 스레드 생성 실패 시, 이미 등록한 커널 리스너를 해제하고, 할당된 메모리도 해제해야 합니다.
-        unregister_kernel_listener(this);
+        //unregister_kernel_listener(this);
+        if (this->creds) {
+            lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+            this->creds->destroy(this->creds);
+            this->creds = NULL;
+        }
         free(this);
         return NULL; // 플러그인 생성 실패를 알립니다.
     }
@@ -623,7 +732,7 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
         // 소켓 스레드가 종료될 때까지 대기합니다.
         this->thread->join(this->thread);
         // 소켓 스레드 객체의 메모리를 해제합니다.
-        this->thread->destroy(this->thread);
+        // thread_destroy(this->thread); // This line is removed as join/detach should handle destruction.
         this->thread = NULL; // 포인터를 NULL로 설정합니다.
     }
 
@@ -634,12 +743,17 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
     unlink(SOCKET_PATH);
 
     // 등록된 SAD/SPD 커널 리스너를 해제합니다.
-    unregister_kernel_listener(this);
+    //unregister_kernel_listener(this); // Temporarily commented out
 
     // 플러그인 언로드 성공 로그를 출력합니다.
     DBG1(DBG_LIB, "extsock plugin unloaded successfully");
 
     // 플러그인 내부 상태 구조체(private_extsock_plugin_t)의 메모리를 해제합니다.
+    if (this->creds) {
+        lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+        this->creds->destroy(this->creds);
+        this->creds = NULL;
+    }
     free(this);
 }
  

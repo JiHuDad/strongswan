@@ -2,6 +2,12 @@
 # libcharon 플러그인이므로 charon_plugin_LTLIBRARIES를 사용할 수도 있지만,
 # plugin_LTLIBRARIES도 일반적으로 잘 동작합니다.
 # 기존 charon 플러그인들의 Makefile.am을 참고하여 더 적합한 변수명을 선택할 수 있습니다.
+
+AM_CPPFLAGS = \
+    -I$(top_srcdir)/src/libstrongswan \
+    -I$(top_srcdir)/src/libcharon \
+    $(EXTSOCK_CFLAGS)
+
 plugin_LTLIBRARIES = libextsock.la
 
 # libextsock.la를 빌드하기 위한 소스 파일 목록입니다.
@@ -15,7 +21,7 @@ libextsock_la_CFLAGS = $(AM_CFLAGS)
 
 # 플러그인이 링크해야 할 다른 라이브러리가 있다면 여기에 추가합니다.
 # 외부 cJSON 라이브러리를 사용하므로 -lcjson 을 추가합니다.
-libextsock_la_LIBADD = -lcjson
+libextsock_la_LIBADD = $(EXTSOCK_LIBS)
 
 # Libtool 라이브러리를 빌드할 때 사용되는 LDFLAGS입니다.
 # -module: 공유 모듈로 빌드하도록 지정합니다.

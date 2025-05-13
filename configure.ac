@@ -215,6 +215,23 @@ ARG_ENABL_SET([eap-dynamic],    [enable dynamic EAP proxy module.])
 ARG_ENABL_SET([eap-radius],     [enable RADIUS proxy authentication module.])
 ARG_ENABL_SET([ext-auth],       [enable plugin calling an external authorization script.])
 ARG_ENABL_SET([extsock],        [enable External Socket Plugin for Charon.])
+if test "x$enable_extsock" = "xyes"; then
+  AC_CHECK_HEADER([cjson/cJSON.h], [
+    AC_CHECK_LIB([cjson], [cJSON_Parse], [
+      AC_DEFINE([HAVE_CJSON_FOR_EXTSOCK], 1, [Define to 1 if cJSON is available for extsock])
+      EXTSOCK_CFLAGS="-I/usr/include/cjson"
+      EXTSOCK_LIBS="-lcjson"
+      AC_SUBST(EXTSOCK_CFLAGS)
+      AC_SUBST(EXTSOCK_LIBS)
+    ], [
+      AC_MSG_WARN([cJSON library not found (or cJSON_Parse symbol missing), extsock plugin will be disabled.])
+      enable_extsock=no
+    ])
+  ], [
+    AC_MSG_WARN([cjson/cJSON.h header not found, extsock plugin will be disabled.])
+    enable_extsock=no
+  ])
+fi
 ARG_ENABL_SET([ipseckey],       [enable IPSECKEY authentication plugin.])
 ARG_ENABL_SET([keychain],       [enables OS X Keychain Services credential set.])
 ARG_ENABL_SET([pkcs11],         [enables the PKCS11 token support plugin.])
@@ -1650,6 +1667,7 @@ ADD_PLUGIN([eap-tls],              [c charon nm cmd])
 ADD_PLUGIN([eap-ttls],             [c charon nm cmd])
 ADD_PLUGIN([eap-peap],             [c charon nm cmd])
 ADD_PLUGIN([eap-tnc],              [c charon])
+ADD_PLUGIN([extsock],              [c charon])
 ADD_PLUGIN([xauth-generic],        [c charon cmd])
 ADD_PLUGIN([xauth-eap],            [c charon])
 ADD_PLUGIN([xauth-pam],            [c charon])
@@ -1920,6 +1938,7 @@ AM_CONDITIONAL(USE_PYTHON_WHEELS, test x$python_wheels = xtrue)
 AM_CONDITIONAL(USE_PERL_CPAN, test x$perl_cpan = xtrue)
 AM_CONDITIONAL(USE_TOX, test "x$TOX" != x)
 AM_CONDITIONAL(USE_PY_TEST, test "x$PY_TEST" != x -a "x$TOX" = x)
+AM_CONDITIONAL(USE_EXTSOCK, test "x$enable_extsock" = xyes)
 
 # ========================
 #  set global definitions
@@ -2146,6 +2165,7 @@ AC_CONFIG_FILES([
 	src/libcharon/plugins/systime_fix/Makefile
 	src/libcharon/plugins/led/Makefile
 	src/libcharon/plugins/duplicheck/Makefile
+	src/libcharon/plugins/extsock/Makefile
 	src/libcharon/plugins/coupling/Makefile
 	src/libcharon/plugins/radattr/Makefile
 	src/libcharon/plugins/osx_attr/Makefile

@@ -752,6 +752,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_EXTSOCK
+  SUBDIRS += plugins/extsock
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/extsock/libstrongswan-extsock.la
+endif
+endif
+
 if MONOLITHIC
   SUBDIRS += .
 endif
