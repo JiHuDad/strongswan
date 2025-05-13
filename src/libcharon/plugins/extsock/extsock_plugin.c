@@ -143,96 +143,182 @@ static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id,
 // JSON 문자열을 파싱하여 strongSwan에 IKE/CHILD 설정을 동적으로 추가/적용하는 함수입니다.
 static void apply_ipsec_config(const char *json)
 {
-    // JSON 파싱 시작
     cJSON *root = cJSON_Parse(json);
-    // 파싱 실패 시 에러 로그 출력 후 반환
     if (!root) {
         DBG1(DBG_LIB, "Failed to parse JSON for IPsec config");
         return;
     }
-    // JSON 객체에서 "name" 키의 값(연결 이름)을 문자열로 가져옵니다.
     const char *conn_name = cJSON_GetObjectItem(root, "name")->valuestring;
-    // "local" 키의 값(로컬 IP 주소)을 가져옵니다.
     const char *local = cJSON_GetObjectItem(root, "local")->valuestring;
-    // "remote" 키의 값(원격 IP 주소)을 가져옵니다.
     const char *remote = cJSON_GetObjectItem(root, "remote")->valuestring;
-    // "psk" 키의 값(사전 공유키)을 가져옵니다.
-    const char *psk = cJSON_GetObjectItem(root, "psk")->valuestring;
 
-    // IKE 설정을 위한 초기화 구조체입니다.
+    // IKE/ESP proposal 파싱
+    const char *ike_proposal = NULL, *esp_proposal = NULL;
+    cJSON *ike_prop_json = cJSON_GetObjectItem(root, "ike_proposal");
+    if (ike_prop_json && cJSON_IsString(ike_prop_json)) {
+        ike_proposal = ike_prop_json->valuestring;
+    }
+    cJSON *esp_prop_json = cJSON_GetObjectItem(root, "esp_proposal");
+    if (esp_prop_json && cJSON_IsString(esp_prop_json)) {
+        esp_proposal = esp_prop_json->valuestring;
+    }
+
+    // DPD, rekey_time 등 추가 옵션 파싱
+    int dpd = 30, rekey_time = 3600, jitter_time = 300, over_time = 300;
+    cJSON *dpd_json = cJSON_GetObjectItem(root, "dpd");
+    if (dpd_json && cJSON_IsNumber(dpd_json)) {
+        dpd = dpd_json->valueint;
+    }
+    cJSON *rekey_json = cJSON_GetObjectItem(root, "rekey_time");
+    if (rekey_json && cJSON_IsNumber(rekey_json)) {
+        rekey_time = rekey_json->valueint;
+    }
+    cJSON *jitter_json = cJSON_GetObjectItem(root, "jitter_time");
+    if (jitter_json && cJSON_IsNumber(jitter_json)) {
+        jitter_time = jitter_json->valueint;
+    }
+    cJSON *over_json = cJSON_GetObjectItem(root, "over_time");
+    if (over_json && cJSON_IsNumber(over_json)) {
+        over_time = over_json->valueint;
+    }
+
+    // IKE 설정 생성
     ike_cfg_create_t ike = {
-        .version = IKEV2, .local = local, .local_port = 500, // IKEv2, 로컬 주소/포트
-        .remote = remote, .remote_port = 500, .no_certreq = TRUE, // 원격 주소/포트, 인증서 요청 안 함
+        .version = IKEV2, .local = local, .local_port = 500,
+        .remote = remote, .remote_port = 500, .no_certreq = FALSE,
     };
-    // IKE 설정 객체를 생성합니다.
     ike_cfg_t *ike_cfg = ike_cfg_create(&ike);
-    // 기본 IKE 제안(proposal)을 추가합니다. (암호화/인증 알고리즘 등)
-    ike_cfg->add_proposal(ike_cfg, proposal_create_default(PROTO_IKE));
-    ike_cfg->add_proposal(ike_cfg, proposal_create_default_aead(PROTO_IKE)); // AEAD 알고리즘 제안 추가
+    if (ike_proposal) {
+        ike_cfg->add_proposal(ike_cfg, proposal_create_from_string(PROTO_IKE, ike_proposal));
+    } else {
+        ike_cfg->add_proposal(ike_cfg, proposal_create_default(PROTO_IKE));
+        ike_cfg->add_proposal(ike_cfg, proposal_create_default_aead(PROTO_IKE));
+    }
 
-    // Peer 설정을 위한 초기화 구조체입니다.
+    // Peer 설정 생성
     peer_cfg_create_t peer = {
-        .cert_policy = CERT_NEVER_SEND, .unique = UNIQUE_REPLACE, .keyingtries = 1, // 인증서 정책, 고유성, 키 교환 시도
-        .rekey_time = 3600, .jitter_time = 300, .over_time = 300, .dpd = 30, // 재키 교환 시간, 지터, DPD 설정
+        .cert_policy = CERT_NEVER_SEND, .unique = UNIQUE_REPLACE, .keyingtries = 1,
+        .rekey_time = rekey_time, .jitter_time = jitter_time, .over_time = over_time, .dpd = dpd,
     };
-    // Peer 설정 객체를 생성합니다. 연결 이름과 IKE 설정을 사용합니다.
     peer_cfg_t *peer_cfg = peer_cfg_create(conn_name, ike_cfg, &peer);
 
-    // 로컬 측 인증 설정을 생성합니다.
-    auth_cfg_t *auth = auth_cfg_create();
-    // 인증 방식을 PSK (Pre-Shared Key)로 설정합니다.
-    auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-    // 로컬 ID를 설정합니다.
-    auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local));
-    // Peer 설정에 로컬 인증 설정을 추가합니다. (TRUE: 로컬/initiator 측)
-    peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
+    // 인증 방식 파싱 (auth: {type, ...})
+    cJSON *auth_json = cJSON_GetObjectItem(root, "auth");
+    if (auth_json && cJSON_IsObject(auth_json)) {
+        const char *auth_type = cJSON_GetObjectItem(auth_json, "type")->valuestring;
+        if (strcmp(auth_type, "cert") == 0) {
+            // 인증서 기반 인증
+            const char *local_id = cJSON_GetObjectItem(auth_json, "local_id")->valuestring;
+            const char *remote_id = cJSON_GetObjectItem(auth_json, "remote_id")->valuestring;
+            const char *cert_file = cJSON_GetObjectItem(auth_json, "cert_file")->valuestring;
+            const char *key_file = cJSON_GetObjectItem(auth_json, "key_file")->valuestring;
+            // 인증서/키를 strongSwan credential manager에 등록
+            certificate_t *cert = lib->creds->create(lib->creds, CRED_CERTIFICATE, CERT_X509, BUILD_FROM_FILE, cert_file, BUILD_END);
+            private_key_t *key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY, BUILD_FROM_FILE, key_file, BUILD_END);
+            if (cert) {
+                charon->credentials->add_cert(charon->credentials, cert);
+            }
+            if (key) {
+                charon->credentials->add_key(charon->credentials, key);
+            }
+            // 로컬 인증 설정
+            auth_cfg_t *auth = auth_cfg_create();
+            auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id));
+            peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
+            // 원격 인증 설정
+            auth = auth_cfg_create();
+            auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id));
+            peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
+        } else if (strcmp(auth_type, "psk") == 0) {
+            // PSK 기반 인증
+            const char *psk = cJSON_GetObjectItem(root, "psk")->valuestring;
+            const char *local_id = cJSON_GetObjectItem(auth_json, "local_id") ? cJSON_GetObjectItem(auth_json, "local_id")->valuestring : local;
+            const char *remote_id = cJSON_GetObjectItem(auth_json, "remote_id") ? cJSON_GetObjectItem(auth_json, "remote_id")->valuestring : remote;
+            // 로컬 인증 설정
+            auth_cfg_t *auth = auth_cfg_create();
+            auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local_id));
+            peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
+            // 원격 인증 설정
+            auth = auth_cfg_create();
+            auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
+            auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote_id));
+            peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
+            // PSK 등록
+            shared_key_t *key = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
+            charon->credentials->add_shared(charon->credentials, key);
+        }
+    } else {
+        // 기본: PSK 방식 (호환성)
+        const char *psk = cJSON_GetObjectItem(root, "psk")->valuestring;
+        // 로컬 인증 설정
+        auth_cfg_t *auth = auth_cfg_create();
+        auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
+        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(local));
+        peer_cfg->add_auth_cfg(peer_cfg, auth, TRUE);
+        // 원격 인증 설정
+        auth = auth_cfg_create();
+        auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
+        auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote));
+        peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
+        // PSK 등록
+        shared_key_t *key = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
+        charon->credentials->add_shared(charon->credentials, key);
+    }
 
-    // 원격 측 인증 설정을 생성합니다.
-    auth = auth_cfg_create();
-    // 인증 방식을 PSK로 설정합니다.
-    auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
-    // 원격 ID를 설정합니다.
-    auth->add(auth, AUTH_RULE_IDENTITY, identification_create_from_string(remote));
-    // Peer 설정에 원격 인증 설정을 추가합니다. (FALSE: 원격/responder 측)
-    peer_cfg->add_auth_cfg(peer_cfg, auth, FALSE);
+    // 여러 CHILD_SA 지원 (children: array)
+    cJSON *children_json = cJSON_GetObjectItem(root, "children");
+    if (children_json && cJSON_IsArray(children_json)) {
+        int n = cJSON_GetArraySize(children_json);
+        for (int i = 0; i < n; i++) {
+            cJSON *child_json = cJSON_GetArrayItem(children_json, i);
+            const char *child_name = cJSON_GetObjectItem(child_json, "name")->valuestring;
+            const char *local_ts = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
+            const char *remote_ts = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+            child_cfg_create_t child_cfg_data = {
+                .mode = MODE_TUNNEL,
+                .lifetime = { .time = { .life = 3600, .rekey = 3000, .jitter = 300 } }
+            };
+            child_cfg_t *child_cfg = child_cfg_create(child_name, &child_cfg_data);
+            // ESP proposal 적용
+            if (esp_proposal) {
+                child_cfg->add_proposal(child_cfg, proposal_create_from_string(PROTO_ESP, esp_proposal));
+            } else {
+                child_cfg->add_proposal(child_cfg, proposal_create_default_aead(PROTO_ESP));
+                child_cfg->add_proposal(child_cfg, proposal_create_default(PROTO_ESP));
+            }
+            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts, 0, 0, 65535));
+            peer_cfg->add_child_cfg(peer_cfg, child_cfg);
+        }
+    } else {
+        // 기존 단일 child 처리 (child: object)
+        cJSON *child_json = cJSON_GetObjectItem(root, "child");
+        if (child_json && cJSON_IsObject(child_json)) {
+            const char *child_name = cJSON_GetObjectItem(child_json, "name")->valuestring;
+            const char *local_ts = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
+            const char *remote_ts = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
+            child_cfg_create_t child_cfg_data = {
+                .mode = MODE_TUNNEL,
+                .lifetime = { .time = { .life = 3600, .rekey = 3000, .jitter = 300 } }
+            };
+            child_cfg_t *child_cfg = child_cfg_create(child_name, &child_cfg_data);
+            if (esp_proposal) {
+                child_cfg->add_proposal(child_cfg, proposal_create_from_string(PROTO_ESP, esp_proposal));
+            } else {
+                child_cfg->add_proposal(child_cfg, proposal_create_default_aead(PROTO_ESP));
+                child_cfg->add_proposal(child_cfg, proposal_create_default(PROTO_ESP));
+            }
+            child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts, 0, 0, 65535));
+            child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts, 0, 0, 65535));
+            peer_cfg->add_child_cfg(peer_cfg, child_cfg);
+        }
+    }
 
-    // JSON 객체에서 "child" 키의 값(CHILD_SA 설정)을 가져옵니다.
-    cJSON *child_json = cJSON_GetObjectItem(root, "child"); // 변수 이름 변경 (child -> child_json)
-    // CHILD_SA의 이름을 가져옵니다.
-    const char *child_name = cJSON_GetObjectItem(child_json, "name")->valuestring;
-    // 로컬 트래픽 셀렉터를 가져옵니다.
-    const char *local_ts = cJSON_GetObjectItem(child_json, "local_ts")->valuestring;
-    // 원격 트래픽 셀렉터를 가져옵니다.
-    const char *remote_ts = cJSON_GetObjectItem(child_json, "remote_ts")->valuestring;
-
-    // CHILD_SA 설정을 위한 초기화 구조체입니다.
-    child_cfg_create_t child_cfg_data = {
-        .mode = MODE_TUNNEL, // IPsec 모드를 터널 모드로 설정합니다.
-        .lifetime = { .time = { .life = 3600, .rekey = 3000, .jitter = 300 } } // 수명 및 재키 교환 시간 설정
-    };
-    // CHILD_SA 설정 객체를 생성합니다.
-    child_cfg_t *child_cfg = child_cfg_create(child_name, &child_cfg_data);
-    // 기본 ESP 제안을 추가합니다. (ESP: Encapsulating Security Payload)
-    child_cfg->add_proposal(child_cfg, proposal_create_default_aead(PROTO_ESP)); // AEAD 알고리즘 제안
-    child_cfg->add_proposal(child_cfg, proposal_create_default(PROTO_ESP));
-    // 로컬 트래픽 셀렉터를 추가합니다. CIDR 형식의 문자열로부터 생성합니다.
-    child_cfg->add_traffic_selector(child_cfg, TRUE, traffic_selector_create_from_cidr(local_ts, 0, 0, 65535));
-    // 원격 트래픽 셀렉터를 추가합니다.
-    child_cfg->add_traffic_selector(child_cfg, FALSE, traffic_selector_create_from_cidr(remote_ts, 0, 0, 65535));
-    // Peer 설정에 CHILD_SA 설정을 추가합니다.
-    peer_cfg->add_child_cfg(peer_cfg, child_cfg);
-
-    // strongSwan 설정 백엔드에 완성된 Peer 설정을 추가합니다.
     charon->backends->add_peer_cfg(charon->backends, peer_cfg);
-
-    // PSK를 strongSwan의 credential manager에 등록합니다.
-    // PSK 문자열로부터 chunk_t (바이너리 데이터)를 생성하여 shared_key_t 객체를 만듭니다.
-    shared_key_t *key = shared_key_create(SHARED_IKE, chunk_create((u_char*)psk, strlen(psk)));
-    charon->credentials->add_shared(charon->credentials, key);
-
-    // 설정 적용 완료 로그를 출력합니다.
     DBG1(DBG_LIB, "IPsec config applied successfully: %s", conn_name);
-    // 사용이 끝난 cJSON 객체의 메모리를 해제합니다.
     cJSON_Delete(root);
 }
 
