@@ -1,7 +1,7 @@
 // 플러그인 자체 헤더 파일을 포함합니다. 플러그인의 공개 인터페이스를 정의합니다.
 #include "extsock_plugin.h"
 // cJSON 라이브러리 헤더 파일을 포함합니다. JSON 파싱 및 생성을 위해 사용됩니다.
-#include <cjson/cJSON.h>
+#include <cJSON.h>
 
 // strongSwan 데몬 및 라이브러리 관련 핵심 헤더 파일들을 포함합니다.
 #include <daemon.h>      // 데몬 관련 기능 (charon 전역 객체 등)
@@ -26,6 +26,9 @@
 #include <credentials/sets/mem_cred.h> // For mem_cred_t
 #include <credentials/credential_manager.h> // For lib->credmgr
 #include <control/controller.h> // For charon->controller->initiate
+#include <bus/listeners/listener.h>
+#include <sa/child_sa.h>
+#include <config/peer_cfg.h>
 
 // Forward declarations
 static kernel_listener_t* kernel_listener_create(
@@ -37,6 +40,13 @@ static kernel_listener_t* kernel_listener_create(
     bool (*tun)(kernel_listener_t *this, tun_device_t *tun, bool created)
 );
 
+// Forward declarations for event sending functions
+static void send_event_to_external(const char *event_json);
+static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id);
+static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id);
+// Forward declaration for ts_to_string utility
+static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen);
+
 // 유닉스 도메인 소켓 파일의 경로를 정의합니다. 외부 프로그램과 통신 채널로 사용됩니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 
@@ -45,11 +55,6 @@ typedef struct private_extsock_plugin_t private_extsock_plugin_t;
 
 // Forward declaration for the destroy function
 static void extsock_plugin_destroy(private_extsock_plugin_t *this);
-
-// Forward declarations for event sending functions
-static void send_event_to_external(const char *event_json);
-static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id);
-static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id);
 
 // 플러그인의 내부 상태를 저장하는 구조체입니다.
 struct private_extsock_plugin_t {
@@ -69,14 +74,43 @@ static void apply_ipsec_config(private_extsock_plugin_t *this, const char *confi
 // Function definitions
 static void start_dpd(const char *ike_sa_name)
 {
-    // TODO: Implement DPD start functionality
-    DBG1(DBG_LIB, "start_dpd called with IKE_SA name: %s", ike_sa_name);
+    ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
+        charon->ike_sa_manager, (char*)ike_sa_name, ID_MATCH_PERFECT);
+    if (!ike_sa)
+    {
+        DBG1(DBG_LIB, "start_dpd: IKE_SA '%s' not found", ike_sa_name);
+        return;
+    }
+    DBG1(DBG_LIB, "start_dpd: Starting DPD for IKE_SA '%s'", ike_sa_name);
+    ike_dpd_t *dpd = ike_dpd_create(TRUE);
+    ike_sa->queue_task(ike_sa, (task_t*)dpd);
 }
 
 static void apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json)
 {
-    // TODO: Implement IPsec config application
-    DBG1(DBG_LIB, "apply_ipsec_config called with config: %s", config_json);
+    DBG1(DBG_LIB, "apply_ipsec_config: received config: %s", config_json);
+    cJSON *root = cJSON_Parse(config_json);
+    if (!root)
+    {
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse JSON");
+        return;
+    }
+    // Example: parse basic fields (name, local, remote, auth, proposal)
+    cJSON *name = cJSON_GetObjectItem(root, "name");
+    cJSON *local = cJSON_GetObjectItem(root, "local");
+    cJSON *remote = cJSON_GetObjectItem(root, "remote");
+    if (!name || !local || !remote)
+    {
+        DBG1(DBG_LIB, "apply_ipsec_config: Missing required fields");
+        cJSON_Delete(root);
+        return;
+    }
+    // For demonstration, just log the parsed values
+    DBG1(DBG_LIB, "apply_ipsec_config: name=%s, local=%s, remote=%s", name->valuestring, local->valuestring, remote->valuestring);
+    // TODO: Actually create and install IKE/CHILD config using strongSwan APIs
+    // This would involve creating peer_cfg_t, ike_cfg_t, child_cfg_t, etc.
+    // For now, just log and clean up
+    cJSON_Delete(root);
 }
 
 //-------------------- SAD/SPD 이벤트 hook 콜백 함수들 --------------------
@@ -103,15 +137,6 @@ static bool acquire(kernel_listener_t *this, uint32_t reqid, kernel_acquire_data
     return TRUE;
 }
 
-/**
- * SAD에서 SA가 만료될 때 호출되는 콜백 함수입니다.
- * @param listener 이 콜백을 호출한 kernel_listener_t 객체입니다.
- * @param protocol SA의 프로토콜 (ESP/AH)
- * @param spi SA의 SPI (Security Parameter Index)
- * @param dst SA의 목적지 주소
- * @param hard TRUE이면 하드 만료, FALSE이면 소프트 만료
- * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
- */
 static bool expire(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, bool hard)
 {
     kernel_ipsec_sa_id_t sa_id = {
@@ -284,6 +309,33 @@ static int extsock_plugin_get_features(plugin_t* plugin, plugin_feature_t *featu
     return 0;
 }
 
+// child_updown listener for tunnel up/down notification
+static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up)
+{
+    char buf[1024];
+    uint32_t spi = child_sa->get_spi(child_sa, TRUE); // inbound SPI
+    uint8_t proto = child_sa->get_protocol(child_sa);
+    const char *proto_str = (proto == IPPROTO_ESP) ? "esp" : (proto == IPPROTO_AH) ? "ah" : "unknown";
+    traffic_selector_t *local_ts, *remote_ts;
+    enumerator_t *ts_enum = child_sa->create_policy_enumerator(child_sa);
+    if (ts_enum && ts_enum->enumerate(ts_enum, &local_ts, &remote_ts)) {
+        char local_buf[128], remote_buf[128];
+        ts_to_string(local_ts, local_buf, sizeof(local_buf));
+        ts_to_string(remote_ts, remote_buf, sizeof(remote_buf));
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"tunnel_%s\",\"spi\":%u,\"proto\":\"%s\",\"local_ts\":\"%s\",\"remote_ts\":\"%s\"}",
+            up ? "up" : "down", spi, proto_str, local_buf, remote_buf);
+        send_event_to_external(buf);
+    }
+    if (ts_enum) ts_enum->destroy(ts_enum);
+    return TRUE;
+}
+
+// Listener instance
+static listener_t extsock_listener = {
+    .child_updown = extsock_child_updown,
+};
+
 /**
  * 플러그인이 strongSwan에 로드될 때 호출되는 생성자 함수입니다.
  * 플러그인의 초기화 작업을 수행합니다.
@@ -306,6 +358,8 @@ plugin_t* extsock_plugin_create()
 
     // SAD/SPD 변경 이벤트를 수신하기 위해 커널 리스너를 등록합니다.
     register_kernel_listener(this);
+    // bus에 child_updown 리스너 등록
+    charon->bus->add_listener(charon->bus, &extsock_listener);
 
     this->creds = mem_cred_create();
     if (this->creds) {
@@ -416,79 +470,56 @@ static void send_event_to_external(const char *event_json)
     close(fd);
 }
 
-// SAD (Security Association Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
+// SAD (Security Association Database) 및 SPD (Security Policy Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
 static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id)
 {
-    // 생성될 JSON 문자열을 저장하기 위한 버퍼입니다. 크기는 예상되는 최대 길이를 고려하여 설정합니다.
     char buf[512];
-    // 출발지 및 목적지 IP 주소를 문자열 형태로 저장하기 위한 버퍼입니다.
     char src_str[64], dst_str[64];
-
-    // kernel_ipsec_sa_id_t 구조체에 저장된 출발지 주소(sockaddr 형식)를 host_t 객체로 변환합니다.
-    // host_t는 strongSwan에서 IP 주소를 다루는 내부 표현 방식입니다.
     host_t *src_host = host_create_from_sockaddr((struct sockaddr*)&id->src);
-    // kernel_ipsec_sa_id_t 구조체에 저장된 목적지 주소를 host_t 객체로 변환합니다.
     host_t *dst_host = host_create_from_sockaddr((struct sockaddr*)&id->dst);
-    // host_t 객체를 사람이 읽을 수 있는 IP 주소 문자열 형식으로 변환하여 버퍼에 저장합니다. (예: "192.168.0.1")
-    // %H 포맷 지정자는 host_t 객체를 문자열로 변환합니다.
     snprintf(src_str, sizeof(src_str), "%H", src_host);
     snprintf(dst_str, sizeof(dst_str), "%H", dst_host);
-
-    // JSON 형식의 문자열을 생성합니다.
-    // 이벤트 타입("SAD_ADD", "SAD_DELETE"), SPI (Security Parameter Index), 프로토콜,
-    // 출발지 주소, 목적지 주소 정보를 포함합니다.
     snprintf(buf, sizeof(buf),
-        "{\"event\":\"%s\",\"spi\":%u,\"proto\":%u,\"src\":\"%s\",\"dst\":\"%s\"}", // 수정된 부분
-        event_type,  // 이벤트의 종류 (예: "SAD_ADD", "SAD_DELETE")
-        id->spi,     // SA를 고유하게 식별하는 32비트 정수 값입니다.
-        id->proto,   // SA가 사용하는 프로토콜 (예: IPSEC_PROTO_ESP, IPSEC_PROTO_AH)
-        src_str,     // 변환된 출발지 IP 주소 문자열입니다.
-        dst_str);    // 변환된 목적지 IP 주소 문자열입니다.
-
-    // 주소 변환을 위해 동적으로 할당된 host_t 객체의 메모리를 해제합니다.
-    DESTROY_IF(src_host); // src_host가 NULL이 아니면 파괴(메모리 해제)합니다.
-    DESTROY_IF(dst_host); // dst_host가 NULL이 아니면 파괴합니다.
-
-    // 최종적으로 생성된 JSON 문자열을 외부 프로그램으로 전송합니다.
+        "{\"event\":\"%s\",\"spi\":%u,\"proto\":%u,\"src\":\"%s\",\"dst\":\"%s\"}",
+        event_type,
+        id->spi,
+        id->proto,
+        src_str,
+        dst_str);
+    DESTROY_IF(src_host);
+    DESTROY_IF(dst_host);
     send_event_to_external(buf);
 }
 
-// SPD (Security Policy Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
 static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id)
 {
-    // 생성될 JSON 문자열을 저장하기 위한 버퍼입니다.
     char buf[512];
-    // 출발지 및 목적지 IP 주소/네트워크를 문자열 형태로 저장하기 위한 버퍼입니다.
-    char src_str[64], dst_str[64];
-
-    // traffic_selector_t 객체에서 IP 주소/네트워크 정보를 가져옵니다.
-    if (id->src_ts && id->dst_ts) {
-        snprintf(src_str, sizeof(src_str), "%R", id->src_ts);
-        snprintf(dst_str, sizeof(dst_str), "%R", id->dst_ts);
-    } else {
-        strncpy(src_str, "any", sizeof(src_str));
-        strncpy(dst_str, "any", sizeof(dst_str));
-    }
-
-    // 정책의 방향(direction)을 나타내는 정수 값을 문자열로 변환합니다.
-    const char *dir_str = (id->dir == POLICY_IN) ? "in" :       // Inbound (수신) 정책
-                         (id->dir == POLICY_OUT) ? "out" :     // Outbound (송신) 정책
-                         "fwd";                                // Forward (전달) 정책 (일반적으로 잘 사용되지 않음)
-
-    // JSON 형식의 문자열을 생성합니다.
-    // 이벤트 타입("SPD_ADD", "SPD_DELETE"), 정책 방향,
-    // 출발지 선택자, 목적지 선택자 정보를 포함합니다.
+    char src_buf[128], dst_buf[128];
+    ts_to_string(id->src_ts, src_buf, sizeof(src_buf));
+    ts_to_string(id->dst_ts, dst_buf, sizeof(dst_buf));
+    const char *dir_str = (id->dir == POLICY_IN) ? "in" :
+                         (id->dir == POLICY_OUT) ? "out" :
+                         "fwd";
     snprintf(buf, sizeof(buf),
-        "{\"event\":\"%s\",\"dir\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\",\"if_id\":%u,\"interface\":\"%s\"}",
-        event_type,  // 이벤트의 종류 (예: "SPD_ADD", "SPD_DELETE")
-        dir_str,     // 변환된 정책 방향 문자열입니다. ("in", "out", "fwd")
-        src_str,     // 변환된 출발지 선택자 문자열입니다.
-        dst_str,     // 변환된 목적지 선택자 문자열입니다.
-        id->if_id,   // 인터페이스 ID
-        id->interface ? id->interface : ""); // 인터페이스 이름 (NULL이면 빈 문자열)
-
-    // 최종적으로 생성된 JSON 문자열을 외부 프로그램으로 전송합니다.
+        "{\"event\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\",\"dir\":\"%s\"}",
+        event_type,
+        src_buf,
+        dst_buf,
+        dir_str);
     send_event_to_external(buf);
+}
+
+// Utility for traffic selector to string
+static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
+{
+    if (ts && buf && buflen > 0)
+    {
+        snprintf(buf, buflen, "%R", ts);
+    }
+    else if (buf && buflen > 0)
+    {
+        buf[0] = '\0';
+    }
 }
 
 // Forward declarations
