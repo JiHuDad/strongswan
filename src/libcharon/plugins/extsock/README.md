@@ -9,13 +9,19 @@
 ## 주요 기능
 - 외부 프로그램이 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)으로 명령을 전송
 - PSK/인증서 기반 인증, 여러 CHILD_SA, IKE/ESP proposal 등 다양한 설정 지원
-- SAD/SPD 이벤트를 외부로 JSON 포맷으로 알림 가능
+- SAD/SPD 이벤트를 외부로 JSON 포맷으로 알림
+- DPD(Dead Peer Detection) 트리거 명령 지원
 
 ---
 
-## 지원 JSON 포맷 예시
+## 지원 명령 및 예시
 
-### 1. 인증서 기반, 여러 CHILD_SA, proposal 지정
+### 1. IPsec 설정 적용
+- **명령어:** `APPLY_CONFIG <json>`
+- **설명:** JSON 포맷의 IPsec/IKE 설정을 strongSwan에 적용합니다.
+- **구현 상태:** 현재 플러그인 코드는 JSON 파싱 후 strongSwan 설정 적용은 TODO(향후 구현 예정)입니다. 실제 적용은 추후 업데이트 예정입니다.
+
+#### 예시 JSON (인증서 기반, 여러 CHILD_SA, proposal 지정)
 ```json
 {
   "name": "vpn-conn1",
@@ -47,7 +53,7 @@
 }
 ```
 
-### 2. PSK 기반, 단일 CHILD_SA
+#### 예시 JSON (PSK 기반, 단일 CHILD_SA)
 ```json
 {
   "name": "office-vpn",
@@ -62,6 +68,46 @@
 }
 ```
 
+### 2. DPD(Dead Peer Detection) 트리거
+- **명령어:** `START_DPD <ike_sa_name>`
+- **설명:** 지정한 IKE_SA 이름에 대해 DPD를 즉시 트리거합니다.
+- **예시:**
+```
+START_DPD vpn-conn1
+```
+
+---
+
+## SAD/SPD 이벤트 알림 포맷 예시
+
+플러그인은 strongSwan 커널 이벤트(예: SA 만료, 정책 추가 등)를 감지하여 외부 프로그램에 아래와 같은 JSON 포맷으로 알림을 전송합니다.
+
+### 1. SAD(보안 연결) 삭제 이벤트
+```json
+{
+  "event": "SAD_DELETE",
+  "spi": 12345678,
+  "proto": 50,
+  "src": "192.168.1.10",
+  "dst": "203.0.113.5"
+}
+```
+
+### 2. SPD(정책) 추가 이벤트
+```json
+{
+  "event": "SPD_ADD",
+  "src": "10.0.0.0/24",
+  "dst": "10.1.0.0/24",
+  "dir": "out"
+}
+```
+
+- `event`: 이벤트 종류(SAD_DELETE, SPD_ADD 등)
+- `spi`, `proto`: SA 정보(필요시)
+- `src`, `dst`: 트래픽 선택자(정책/SA에 따라 다름)
+- `dir`: 정책 방향(`in`, `out`, `fwd`)
+
 ---
 
 ## 외부 프로그램 예시 (C, cJSON 사용)
@@ -75,7 +121,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include "cJSON.h"
+#include <cJSON.h>
 
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 
@@ -144,11 +190,12 @@ int main() {
 ## 사용 방법 요약
 1. strongSwan을 extsock 플러그인과 함께 빌드 및 실행
 2. 외부 프로그램에서 위와 같은 방식으로 JSON 메시지를 생성
-3. `APPLY_CONFIG <json>` 형태로 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)에 write
-4. strongSwan이 해당 설정을 실시간으로 적용
+3. `APPLY_CONFIG <json>` 또는 `START_DPD <ike_sa_name>` 형태로 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)에 write
+4. strongSwan이 해당 설정을 실시간으로 적용하거나, DPD를 트리거함
 
 ---
 
 ## 참고
 - cJSON 외에도 Python, Go 등 다양한 언어에서 JSON 문자열을 만들어 동일하게 전송할 수 있습니다.
-- 소켓 경로, JSON 포맷 등은 플러그인 코드와 일치해야 합니다. 
+- 소켓 경로, JSON 포맷 등은 플러그인 코드와 일치해야 합니다.
+- 실제 strongSwan 설정 적용은 향후 구현 예정입니다. 
