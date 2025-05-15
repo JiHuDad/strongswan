@@ -1,43 +1,46 @@
 1. Flowchart
 
 ```mermaid
+%%{init: {'themeVariables': { 'width': '1000' }}}%%
 flowchart LR
     subgraph strongSwan
         direction TB
-        A["charon (IKE/IPsec 엔진)"]
-        B["extsock 플러그인"]
+        A["charon (IKE/IPsec engine)"]
+        B["extsock plugin"]
     end
     subgraph UserSpace
-        C["외부 프로그램 (DPDK)"]
+        C["External Program (DPDK)"]
     end
-    D["유닉스 도메인 소켓\n/tmp/strongswan_extsock.sock"]
+    D["Unix Domain Socket\n/tmp/strongswan_extsock.sock"]
 
-    A -- "IKE/CHILD SA up/down 이벤트" --> B
-    B -- "SA/TS 정보(JSON)" --> D
-    C -- "명령/설정(JSON)" --> D
-    D -- "설정/명령(JSON)" --> B
+    A -- "IKE/CHILD SA up/down event" --> B
+    B -- "SA/TS info (JSON)" --> D
+    C -- "Command/Config (JSON)" --> D
+    D -- "Config/Command (JSON)" --> B
     B -- "strongSwan API" --> A
 ```
 
 2. SequenceDiagram
 ```mermaid
+%%{init: {'themeVariables': { 'width': '1000' }}}%%
 sequenceDiagram
-    participant ExtProg as 외부 프로그램(DPDK)
-    participant extsock as extsock 플러그인
+    participant ExtProg as External Program (DPDK)
+    participant extsock as extsock plugin
     participant charon as charon (IKE/IPsec)
     ExtProg->>extsock: APPLY_CONFIG {json}
-    extsock->>charon: strongSwan API로 설정 적용 (TODO)
-    charon-->>extsock: IKE/CHILD SA up 이벤트
+    extsock->>charon: Apply config via strongSwan API (TODO)
+    charon-->>extsock: IKE/CHILD SA up event
     extsock-->>ExtProg: {event: "tunnel_up", spi, proto, local_ts, remote_ts}
-    Note over ExtProg: DPDK가 SA/TS 정보로 데이터플레인 구성
+    Note over ExtProg: DPDK configures dataplane with SA/TS info
     ExtProg->>extsock: START_DPD <ike_sa_name>
-    extsock->>charon: DPD 트리거
-    charon-->>extsock: IKE/CHILD SA down 이벤트
+    extsock->>charon: Trigger DPD
+    charon-->>extsock: IKE/CHILD SA down event
     extsock-->>ExtProg: {event: "tunnel_down", ...}
 ```
 
-3.ClassDiagram
+3. ClassDiagram
 ```mermaid
+%%{init: {'themeVariables': { 'width': '1000' }}}%%
 classDiagram
     class TunnelEvent {
         +string event
