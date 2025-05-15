@@ -30,23 +30,6 @@
 #include <sa/child_sa.h>
 #include <config/peer_cfg.h>
 
-// Forward declarations
-static kernel_listener_t* kernel_listener_create(
-    bool (*acquire)(kernel_listener_t *this, uint32_t reqid, kernel_acquire_data_t *data),
-    bool (*expire)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, bool hard),
-    bool (*mapping)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, host_t *remote),
-    bool (*migrate)(kernel_listener_t *this, uint32_t reqid, traffic_selector_t *src_ts, traffic_selector_t *dst_ts, policy_dir_t direction, host_t *local, host_t *remote),
-    bool (*roam)(kernel_listener_t *this, bool address),
-    bool (*tun)(kernel_listener_t *this, tun_device_t *tun, bool created)
-);
-
-// Forward declarations for event sending functions
-static void send_event_to_external(const char *event_json);
-static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id);
-static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id);
-// Forward declaration for ts_to_string utility
-static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen);
-
 // 유닉스 도메인 소켓 파일의 경로를 정의합니다. 외부 프로그램과 통신 채널로 사용됩니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 
@@ -63,8 +46,6 @@ struct private_extsock_plugin_t {
     int sock_fd;                    // 외부 프로그램과의 통신을 위한 유닉스 도메인 소켓의 파일 디스크립터입니다.
     thread_t *thread;               // 외부 프로그램으로부터 명령을 수신하는 작업을 처리할 스레드 객체입니다.
     bool running;                   // 소켓 수신 스레드가 현재 실행 중인지 여부를 나타내는 플래그입니다.
-    kernel_listener_t *listener;    // SAD (Security Association Database) 및 SPD (Security Policy Database)
-                                    // 변경 이벤트를 감지하기 위한 커널 리스너 객체입니다.
 };
 
 // Function declarations
@@ -111,81 +92,6 @@ static void apply_ipsec_config(private_extsock_plugin_t *this, const char *confi
     // This would involve creating peer_cfg_t, ike_cfg_t, child_cfg_t, etc.
     // For now, just log and clean up
     cJSON_Delete(root);
-}
-
-//-------------------- SAD/SPD 이벤트 hook 콜백 함수들 --------------------
-
-/**
- * SAD (Security Association Database)에 새로운 SA가 추가될 때 호출되는 콜백 함수입니다.
- * @param listener 이 콜백을 호출한 kernel_listener_t 객체입니다.
- * @param id 추가된 SA의 식별자 정보 (SPI, 프로토콜, IP 주소 등)를 담고 있는 구조체입니다.
- * @return 이벤트 처리가 성공적으로 완료되었으면 TRUE를 반환합니다.
- */
-static bool acquire(kernel_listener_t *this, uint32_t reqid, kernel_acquire_data_t *data)
-{
-    if (data && data->src && data->dst) {
-        kernel_ipsec_policy_id_t policy_id = {
-            .dir = POLICY_OUT,  // Default to outbound policy
-            .src_ts = data->src,
-            .dst_ts = data->dst,
-            .if_id = 0,         // No specific interface
-            .interface = NULL,  // No specific interface
-            .label = data->label
-        };
-        send_spd_event("SPD_ADD", &policy_id);
-    }
-    return TRUE;
-}
-
-static bool expire(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, bool hard)
-{
-    kernel_ipsec_sa_id_t sa_id = {
-        .spi = spi,
-        .proto = protocol,
-        .dst = dst,
-        .src = NULL,  // Source address not available in expire event
-        .mark = {0, 0},
-        .if_id = 0
-    };
-    send_sad_event("SAD_DELETE", &sa_id);
-    return TRUE;
-}
-
-/**
- * SAD/SPD 변경 이벤트를 감지하기 위한 kernel_listener_t 객체를 생성하고 등록하는 함수입니다.
- * @param this 플러그인의 내부 상태를 저장하는 private_extsock_plugin_t 구조체에 대한 포인터입니다.
- */
-static void register_kernel_listener(private_extsock_plugin_t *this)
-{
-    // SAD/SPD 이벤트 발생 시 호출될 콜백 함수들을 지정하여 kernel_listener_t 객체를 생성합니다.
-    // 사용하지 않는 이벤트 콜백은 NULL로 설정합니다.
-    this->listener = kernel_listener_create(
-        acquire,  // acquire
-        expire,   // expire
-        NULL,     // mapping
-        NULL,     // migrate
-        NULL,     // roam
-        NULL      // tun
-    );
-
-    // 생성된 리스너 객체를 strongSwan 커널 인터페이스에 추가하여 이벤트 수신을 시작합니다.
-    charon->kernel->add_listener(charon->kernel, this->listener);
-}
-
-/**
- * 등록된 kernel_listener_t 객체를 해제하고 strongSwan 커널에서 제거하는 함수입니다.
- * @param this 플러그인의 내부 상태를 저장하는 private_extsock_plugin_t 구조체에 대한 포인터입니다.
- */
-static void unregister_kernel_listener(private_extsock_plugin_t *this)
-{
-    // 리스너 객체가 유효한 경우(NULL이 아닌 경우)에만 해제 작업을 수행합니다.
-    if (this->listener) {
-        // strongSwan 커널 인터페이스에서 리스너를 제거합니다.
-        charon->kernel->remove_listener(charon->kernel, this->listener);
-        // 리스너 객체 자체의 메모리를 해제합니다.
-        // this->listener->destroy(this->listener); // destroy 멤버가 없으므로 제거
-        this->listener = NULL;
-    }
 }
 
 //-------------------- 소켓을 통해 수신된 외부 명령 처리 함수 --------------------
@@ -356,8 +262,6 @@ plugin_t* extsock_plugin_create()
     // 플러그인 기능 함수를 설정합니다.
     this->public.get_features = extsock_plugin_get_features;
 
-    // SAD/SPD 변경 이벤트를 수신하기 위해 커널 리스너를 등록합니다.
-    register_kernel_listener(this);
     // bus에 child_updown 리스너 등록
     charon->bus->add_listener(charon->bus, &extsock_listener);
 
@@ -378,7 +282,6 @@ plugin_t* extsock_plugin_create()
     if (!this->thread) {
         DBG1(DBG_LIB, "Failed to create socket listener thread");
         // 스레드 생성 실패 시, 이미 등록한 커널 리스너를 해제하고, 할당된 메모리도 해제해야 합니다.
-        unregister_kernel_listener(this);
         if (this->creds) {
             lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
             this->creds->destroy(this->creds);
@@ -430,7 +333,7 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
     unlink(SOCKET_PATH);
 
     // 등록된 SAD/SPD 커널 리스너를 해제합니다.
-    unregister_kernel_listener(this);
+    charon->bus->remove_listener(charon->bus, &extsock_listener);
 
     // 플러그인 언로드 성공 로그를 출력합니다.
     DBG1(DBG_LIB, "extsock plugin unloaded successfully");
@@ -470,45 +373,6 @@ static void send_event_to_external(const char *event_json)
     close(fd);
 }
 
-// SAD (Security Association Database) 및 SPD (Security Policy Database) 변경 이벤트 정보를 JSON 문자열로 만들어 외부 프로그램에 전송하는 함수입니다.
-static void send_sad_event(const char *event_type, kernel_ipsec_sa_id_t *id)
-{
-    char buf[512];
-    char src_str[64], dst_str[64];
-    host_t *src_host = host_create_from_sockaddr((struct sockaddr*)&id->src);
-    host_t *dst_host = host_create_from_sockaddr((struct sockaddr*)&id->dst);
-    snprintf(src_str, sizeof(src_str), "%H", src_host);
-    snprintf(dst_str, sizeof(dst_str), "%H", dst_host);
-    snprintf(buf, sizeof(buf),
-        "{\"event\":\"%s\",\"spi\":%u,\"proto\":%u,\"src\":\"%s\",\"dst\":\"%s\"}",
-        event_type,
-        id->spi,
-        id->proto,
-        src_str,
-        dst_str);
-    DESTROY_IF(src_host);
-    DESTROY_IF(dst_host);
-    send_event_to_external(buf);
-}
-
-static void send_spd_event(const char *event_type, kernel_ipsec_policy_id_t *id)
-{
-    char buf[512];
-    char src_buf[128], dst_buf[128];
-    ts_to_string(id->src_ts, src_buf, sizeof(src_buf));
-    ts_to_string(id->dst_ts, dst_buf, sizeof(dst_buf));
-    const char *dir_str = (id->dir == POLICY_IN) ? "in" :
-                         (id->dir == POLICY_OUT) ? "out" :
-                         "fwd";
-    snprintf(buf, sizeof(buf),
-        "{\"event\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\",\"dir\":\"%s\"}",
-        event_type,
-        src_buf,
-        dst_buf,
-        dir_str);
-    send_event_to_external(buf);
-}
-
 // Utility for traffic selector to string
 static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
 {
@@ -520,35 +384,4 @@ static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
     {
         buf[0] = '\0';
     }
-}
-
-// Forward declarations
-static kernel_listener_t* kernel_listener_create(
-    bool (*acquire)(kernel_listener_t *this, uint32_t reqid, kernel_acquire_data_t *data),
-    bool (*expire)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, bool hard),
-    bool (*mapping)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, host_t *remote),
-    bool (*migrate)(kernel_listener_t *this, uint32_t reqid, traffic_selector_t *src_ts, traffic_selector_t *dst_ts, policy_dir_t direction, host_t *local, host_t *remote),
-    bool (*roam)(kernel_listener_t *this, bool address),
-    bool (*tun)(kernel_listener_t *this, tun_device_t *tun, bool created)
-);
-
-// kernel_listener_create 함수 구현
-static kernel_listener_t* kernel_listener_create(
-    bool (*acquire)(kernel_listener_t *this, uint32_t reqid, kernel_acquire_data_t *data),
-    bool (*expire)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, bool hard),
-    bool (*mapping)(kernel_listener_t *this, uint8_t protocol, uint32_t spi, host_t *dst, host_t *remote),
-    bool (*migrate)(kernel_listener_t *this, uint32_t reqid, traffic_selector_t *src_ts, traffic_selector_t *dst_ts, policy_dir_t direction, host_t *local, host_t *remote),
-    bool (*roam)(kernel_listener_t *this, bool address),
-    bool (*tun)(kernel_listener_t *this, tun_device_t *tun, bool created))
-{
-    kernel_listener_t *listener = malloc(sizeof(kernel_listener_t));
-    if (listener) {
-        listener->acquire = acquire;
-        listener->expire = expire;
-        listener->mapping = mapping;
-        listener->migrate = migrate;
-        listener->roam = roam;
-        listener->tun = tun;
-    }
-    return listener;
 } 
