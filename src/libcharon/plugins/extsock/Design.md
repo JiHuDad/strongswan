@@ -1,7 +1,7 @@
 1. Flowchart
 
 ```mermaid
-%%{init: {'themeVariables': { 'width': '1001' }}}%%
+%%{init: {'themeVariables': { 'width': '1000' }}}%%
 flowchart LR
     subgraph strongSwan
         direction TB
