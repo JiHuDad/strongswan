@@ -7,6 +7,7 @@
 #include <daemon.h>      // 데몬 관련 기능 (charon 전역 객체 등)
 #include <library.h>     // strongSwan 라이브러리 기본 기능
 #include <threading/thread.h> // 스레드 생성 및 관리 기능
+#include <threading/mutex.h> // Added for mutex_t
 #include <sys/un.h>      // 유닉스 도메인 소켓 주소 구조체 (struct sockaddr_un)
 #include <sys/socket.h>  // 소켓 관련 함수 (socket, connect, bind, listen, accept 등)
 #include <unistd.h>      // 유닉스 표준 함수 (read, write, close, unlink 등)
@@ -17,7 +18,9 @@
 
 // strongSwan 내부의 IPsec 설정, SA 관리, Task, Kernel 이벤트 관련 헤더 파일들을 포함합니다.
 #include <config/ike_cfg.h>       // IKE 설정 (ike_cfg_t) 관련
+#include <config/peer_cfg.h>
 #include <config/child_cfg.h>     // CHILD_SA 설정 (child_cfg_t) 관련
+#include <settings/settings.h>    // Adjusted path based on user confirmation
 #include <sa/ike_sa_manager.h>    // IKE_SA 관리자 관련
 #include <sa/ike_sa.h>            // IKE_SA 객체 관련
 #include <sa/ikev2/tasks/ike_dpd.h>         // DPD(Dead Peer Detection) Task 관련
@@ -28,7 +31,13 @@
 #include <control/controller.h> // For charon->controller->initiate
 #include <bus/listeners/listener.h>
 #include <sa/child_sa.h>
-#include <config/peer_cfg.h>
+#include <selectors/traffic_selector.h> // Path was confirmed
+#include <credentials/auth_cfg.h>
+#include <credentials/keys/shared_key.h> // For shared_key_t
+#include <utils/identification.h>    // For identification_create_from_string, identification_create_any
+#include <utils/chunk.h>             // For chunk_from_str, chunk_clone etc.
+#include <utils/utils/string.h>      // For streq
+#include <collections/linked_list.h> // For linked_list_t
 
 // 유닉스 도메인 소켓 파일의 경로를 정의합니다. 외부 프로그램과 통신 채널로 사용됩니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
@@ -38,6 +47,9 @@ typedef struct private_extsock_plugin_t private_extsock_plugin_t;
 
 // Forward declaration for the destroy function
 static void extsock_plugin_destroy(private_extsock_plugin_t *this);
+// Forward declarations for local static functions
+static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen);
+static void send_event_to_external(const char *event_json);
 
 // 플러그인의 내부 상태를 저장하는 구조체입니다.
 struct private_extsock_plugin_t {
@@ -46,11 +58,19 @@ struct private_extsock_plugin_t {
     int sock_fd;                    // 외부 프로그램과의 통신을 위한 유닉스 도메인 소켓의 파일 디스크립터입니다.
     thread_t *thread;               // 외부 프로그램으로부터 명령을 수신하는 작업을 처리할 스레드 객체입니다.
     bool running;                   // 소켓 수신 스레드가 현재 실행 중인지 여부를 나타내는 플래그입니다.
+    linked_list_t *managed_peer_cfgs; // To store peer_cfg_t objects
+    mutex_t *peer_cfgs_mutex;         // To protect access to managed_peer_cfgs
 };
 
-// Function declarations
-static void start_dpd(const char *ike_sa_name);
-static void apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json);
+// --- Helper function declarations for parsing JSON ---
+static ike_cfg_t* parse_ike_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *ike_json);
+static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *auth_json, bool is_local);
+static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array);
+static linked_list_t* parse_proposals_from_json_array(cJSON *json_array, protocol_id_t proto, bool is_ike);
+static linked_list_t* parse_ts_from_json_array(cJSON *json_array);
+static char* json_array_to_comma_separated_string(cJSON *json_array);
+static action_t string_to_action(const char* action_str);
+// --- End helper function declarations ---
 
 // Function definitions
 static void start_dpd(const char *ike_sa_name)
@@ -67,30 +87,403 @@ static void start_dpd(const char *ike_sa_name)
     ike_sa->queue_task(ike_sa, (task_t*)dpd);
 }
 
+// Helper to convert a JSON array of strings to a single comma-separated string
+static char* json_array_to_comma_separated_string(cJSON *json_array) {
+    if (!json_array || !cJSON_IsArray(json_array) || cJSON_GetArraySize(json_array) == 0) {
+        return strdup("%any"); // Default if not specified or empty
+    }
+
+    chunk_t result = chunk_empty;
+    chunk_t comma = chunk_from_str(",");
+    cJSON *item;
+    bool first = TRUE;
+
+    cJSON_ArrayForEach(item, json_array) {
+        if (cJSON_IsString(item) && item->valuestring && *(item->valuestring)) {
+            chunk_t current_item_chunk = chunk_from_str(item->valuestring);
+            if (first) {
+                result = chunk_clone(current_item_chunk);
+                first = FALSE;
+            } else {
+                // chunk_cat allocates a new chunk and frees the 'm' (moved) chunk (result)
+                // 'c' for comma and current_item_chunk means they are copied.
+                result = chunk_cat("mcc", result, comma, current_item_chunk);
+            }
+        }
+    }
+
+    if (result.len == 0) {
+        // chunk_free(&result); // Not strictly necessary as it's chunk_empty
+        return strdup("%any");
+    }
+
+    // chunk_cat result is not null-terminated. We need to create a C-string.
+    char *str_result = malloc(result.len + 1);
+    if (!str_result) {
+        chunk_free(&result);
+        // Consider a more robust error handling/logging if malloc fails
+        return strdup("%any"); // Fallback
+    }
+    memcpy(str_result, result.ptr, result.len);
+    str_result[result.len] = '\0';
+    chunk_free(&result); // Free the chunk allocated by chunk_cat or chunk_clone
+
+    return str_result;
+}
+
+// Helper to parse proposal strings from JSON array
+static linked_list_t* parse_proposals_from_json_array(cJSON *json_array, protocol_id_t proto, bool is_ike) {
+    linked_list_t *proposals_list = linked_list_create();
+    if (!proposals_list) return NULL;
+
+    if (json_array && cJSON_IsArray(json_array)) {
+        cJSON *prop_json;
+        cJSON_ArrayForEach(prop_json, json_array) {
+            if (cJSON_IsString(prop_json) && prop_json->valuestring) {
+                proposal_t *p = proposal_create_from_string(proto, prop_json->valuestring);
+                if (p) {
+                    proposals_list->insert_last(proposals_list, p);
+                } else {
+                    DBG1(DBG_LIB, "Failed to parse proposal string: %s for proto %d", prop_json->valuestring, proto);
+                }
+            }
+        }
+    }
+
+    if (proposals_list->get_count(proposals_list) == 0) {
+        DBG1(DBG_LIB, "No proposals in JSON, adding defaults for proto %d (is_ike: %d)", proto, is_ike);
+        if (is_ike) { // PROTO_IKE
+            proposal_t *first = proposal_create_default(PROTO_IKE);
+            if (first) proposals_list->insert_last(proposals_list, first);
+            proposal_t *second = proposal_create_default_aead(PROTO_IKE);
+            if (second) proposals_list->insert_last(proposals_list, second);
+        } else { // PROTO_ESP or PROTO_AH
+            proposal_t *first = proposal_create_default_aead(proto);
+            if (first) proposals_list->insert_last(proposals_list, first);
+            proposal_t *second = proposal_create_default(proto);
+            if (second) proposals_list->insert_last(proposals_list, second);
+        }
+    }
+    return proposals_list;
+}
+
+// Helper to parse traffic selector strings from JSON array
+static linked_list_t* parse_ts_from_json_array(cJSON *json_array) {
+    linked_list_t *ts_list = linked_list_create();
+    if (!ts_list) return NULL;
+
+    if (json_array && cJSON_IsArray(json_array)) {
+        cJSON *ts_json;
+        cJSON_ArrayForEach(ts_json, json_array) {
+            if (cJSON_IsString(ts_json) && ts_json->valuestring) {
+                traffic_selector_t *ts = traffic_selector_create_from_cidr(ts_json->valuestring, 0, 0, 0xFFFF);
+                if (ts) {
+                    ts_list->insert_last(ts_list, ts);
+                } else {
+                    DBG1(DBG_LIB, "Failed to parse TS string as CIDR: %s", ts_json->valuestring);
+                }
+            }
+        }
+    }
+    
+    if (ts_list->get_count(ts_list) == 0) {
+        traffic_selector_t* ts = traffic_selector_create_dynamic(0, 0, 0xFFFF);
+        if (ts) ts_list->insert_last(ts_list, ts);
+        DBG1(DBG_LIB, "No traffic selectors in JSON or all failed to parse, adding dynamic TS");
+    }
+    return ts_list;
+}
+
+static ike_cfg_t* parse_ike_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *ike_json) {
+    if (!ike_json) return NULL;
+
+    ike_cfg_create_t ike_create_cfg = {0}; 
+
+    cJSON *j_local_addrs = cJSON_GetObjectItem(ike_json, "local_addrs");
+    ike_create_cfg.local = json_array_to_comma_separated_string(j_local_addrs);
+
+    cJSON *j_remote_addrs = cJSON_GetObjectItem(ike_json, "remote_addrs");
+    ike_create_cfg.remote = json_array_to_comma_separated_string(j_remote_addrs);
+    
+    cJSON *j_version = cJSON_GetObjectItem(ike_json, "version");
+    if (j_version && cJSON_IsNumber(j_version)) {
+        ike_create_cfg.version = j_version->valueint;
+    } else {
+        ike_create_cfg.version = IKE_ANY; 
+    }
+    ike_create_cfg.local_port = 0; 
+    ike_create_cfg.remote_port = 0;
+
+    ike_cfg_t *ike_cfg = ike_cfg_create(&ike_create_cfg);
+    free(ike_create_cfg.local);
+    free(ike_create_cfg.remote);
+
+    if (!ike_cfg) {
+        DBG1(DBG_LIB, "Failed to create ike_cfg");
+        return NULL;
+    }
+
+    cJSON *j_proposals = cJSON_GetObjectItem(ike_json, "proposals");
+    linked_list_t *ike_proposals = parse_proposals_from_json_array(j_proposals, PROTO_IKE, TRUE);
+    if (ike_proposals) {
+        proposal_t *prop;
+        while (ike_proposals->remove_first(ike_proposals, (void**)&prop) == SUCCESS) {
+            ike_cfg->add_proposal(ike_cfg, prop);
+        }
+        ike_proposals->destroy(ike_proposals);
+    }
+    return ike_cfg;
+}
+
+static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *auth_json, bool is_local) {
+    if (!auth_json) return NULL;
+
+    auth_cfg_t *auth_cfg = auth_cfg_create();
+    if (!auth_cfg) {
+        DBG1(DBG_LIB, "Failed to create auth_cfg");
+        return NULL;
+    }
+
+    cJSON *j_auth_type = cJSON_GetObjectItem(auth_json, "auth");
+    cJSON *j_id = cJSON_GetObjectItem(auth_json, "id");
+    cJSON *j_secret = cJSON_GetObjectItem(auth_json, "secret");
+
+    if (j_auth_type && cJSON_IsString(j_auth_type)) {
+        const char *auth_type_str = j_auth_type->valuestring;
+        if (streq(auth_type_str, "psk")) {
+            auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
+            identification_t *psk_identity = NULL;
+            if (j_id && cJSON_IsString(j_id)) {
+                 psk_identity = identification_create_from_string(j_id->valuestring);
+                 // auth_cfg->add will clone the id if it needs to keep it
+                 auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, identification_create_from_string(j_id->valuestring));
+            } else {
+                psk_identity = identification_create_from_string("%any");
+            }
+
+            if (psk_identity) {
+                if (j_secret && cJSON_IsString(j_secret)) {
+                    const char *secret_str = j_secret->valuestring;
+                    chunk_t secret_chunk = chunk_from_str((char*)secret_str);
+                    shared_key_t *psk_key = shared_key_create(SHARED_IKE, chunk_clone(secret_chunk));
+                    if (psk_key) {
+                        // plugin->creds takes ownership of psk_key and psk_identity
+                        plugin->creds->add_shared(plugin->creds, psk_key, psk_identity, NULL);
+                    } else {
+                        DBG1(DBG_LIB, "Failed to create PSK key for ID: %s", j_id ? j_id->valuestring : "%any");
+                        psk_identity->destroy(psk_identity); // psk_key creation failed, cleanup psk_identity
+                    }
+                } else {
+                    DBG1(DBG_LIB, "PSK auth specified but 'secret' missing or not a string for ID: %s", j_id ? j_id->valuestring : "%any");
+                    psk_identity->destroy(psk_identity); // secret missing, cleanup psk_identity
+                }
+            } else {
+                 DBG1(DBG_LIB, "Failed to create PSK identity for PSK auth.");
+            }
+        } else if (streq(auth_type_str, "pubkey")) {
+            auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
+            if (j_id && cJSON_IsString(j_id)) {
+                identification_t *pubkey_id = identification_create_from_string(j_id->valuestring);
+                if (pubkey_id) {
+                    auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, pubkey_id);
+                } else {
+                     DBG1(DBG_LIB, "Failed to create identification for pubkey ID: %s", j_id->valuestring);
+                }
+            } else if (is_local) {
+                 DBG1(DBG_LIB, "Pubkey auth for local peer specified but 'id' missing or not a string.");
+            }
+        } else {
+            DBG1(DBG_LIB, "Unsupported auth type: %s", auth_type_str);
+            auth_cfg->destroy(auth_cfg);
+            return NULL;
+        }
+    } else {
+        DBG1(DBG_LIB, "'auth' type missing in auth config");
+        auth_cfg->destroy(auth_cfg);
+        return NULL;
+    }
+    return auth_cfg;
+}
+
+static action_t string_to_action(const char* action_str) {
+    if (!action_str) return ACTION_NONE;
+    if (streq(action_str, "trap")) return ACTION_TRAP;
+    if (streq(action_str, "start")) return ACTION_START;
+    if (streq(action_str, "clear")) return ACTION_TRAP;   // Was ACTION_CLEAR
+    if (streq(action_str, "hold")) return ACTION_TRAP;    // Was ACTION_HOLD
+    if (streq(action_str, "restart")) return ACTION_START; // Was ACTION_RESTART
+    return ACTION_NONE;
+}
+
+static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array) {
+    if (!children_json_array || !cJSON_IsArray(children_json_array)) {
+        return TRUE;
+    }
+
+    cJSON *child_json;
+    cJSON_ArrayForEach(child_json, children_json_array) {
+        if (!cJSON_IsObject(child_json)) continue;
+
+        cJSON *j_name = cJSON_GetObjectItem(child_json, "name");
+        if (!j_name || !cJSON_IsString(j_name) || !j_name->valuestring) {
+            DBG1(DBG_LIB, "Child config missing 'name'");
+            continue;
+        }
+        const char *child_name_str = j_name->valuestring;
+
+        child_cfg_create_t child_create_cfg = {0};
+        
+        cJSON *j_start_action = cJSON_GetObjectItem(child_json, "start_action");
+        if (j_start_action && cJSON_IsString(j_start_action)) {
+            child_create_cfg.start_action = string_to_action(j_start_action->valuestring);
+        } else {
+            child_create_cfg.start_action = ACTION_NONE; 
+        }
+        
+        cJSON *j_dpd_action = cJSON_GetObjectItem(child_json, "dpd_action");
+        if (j_dpd_action && cJSON_IsString(j_dpd_action)) {
+            child_create_cfg.dpd_action = string_to_action(j_dpd_action->valuestring);
+        } else {
+            child_create_cfg.dpd_action = ACTION_NONE; 
+        }
+
+        child_cfg_t *child_cfg = child_cfg_create((char*)child_name_str, &child_create_cfg);
+        if (!child_cfg) {
+            DBG1(DBG_LIB, "Failed to create child_cfg: %s", child_name_str);
+            continue;
+        }
+
+        cJSON *j_local_ts = cJSON_GetObjectItem(child_json, "local_ts");
+        linked_list_t *local_ts_list = parse_ts_from_json_array(j_local_ts);
+        if (local_ts_list) {
+            traffic_selector_t *ts;
+            while (local_ts_list->remove_first(local_ts_list, (void**)&ts) == SUCCESS) {
+                child_cfg->add_traffic_selector(child_cfg, TRUE, ts);
+            }
+            local_ts_list->destroy(local_ts_list);
+        }
+
+        cJSON *j_remote_ts = cJSON_GetObjectItem(child_json, "remote_ts");
+        linked_list_t *remote_ts_list = parse_ts_from_json_array(j_remote_ts);
+        if (remote_ts_list) {
+            traffic_selector_t *ts;
+            while (remote_ts_list->remove_first(remote_ts_list, (void**)&ts) == SUCCESS) {
+                child_cfg->add_traffic_selector(child_cfg, FALSE, ts);
+            }
+            remote_ts_list->destroy(remote_ts_list);
+        }
+
+        cJSON *j_esp_proposals = cJSON_GetObjectItem(child_json, "esp_proposals");
+        linked_list_t *esp_proposals_list = parse_proposals_from_json_array(j_esp_proposals, PROTO_ESP, FALSE);
+        if (esp_proposals_list) {
+            proposal_t *prop;
+            while (esp_proposals_list->remove_first(esp_proposals_list, (void**)&prop) == SUCCESS) {
+                child_cfg->add_proposal(child_cfg, prop);
+            }
+            esp_proposals_list->destroy(esp_proposals_list);
+        }
+        
+        peer_cfg->add_child_cfg(peer_cfg, child_cfg);
+        DBG2(DBG_LIB, "Added child_cfg: %s to peer_cfg: %s", child_name_str, peer_cfg->get_name(peer_cfg));
+    }
+    return TRUE;
+}
+
 static void apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json)
 {
     DBG1(DBG_LIB, "apply_ipsec_config: received config: %s", config_json);
     cJSON *root = cJSON_Parse(config_json);
-    if (!root)
-    {
-        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse JSON");
+    if (!root) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse JSON: %s", cJSON_GetErrorPtr());
         return;
     }
-    // Example: parse basic fields (name, local, remote, auth, proposal)
-    cJSON *name = cJSON_GetObjectItem(root, "name");
-    cJSON *local = cJSON_GetObjectItem(root, "local");
-    cJSON *remote = cJSON_GetObjectItem(root, "remote");
-    if (!name || !local || !remote)
-    {
-        DBG1(DBG_LIB, "apply_ipsec_config: Missing required fields");
+
+    cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
+    if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Missing connection 'name' in JSON");
         cJSON_Delete(root);
         return;
     }
-    // For demonstration, just log the parsed values
-    DBG1(DBG_LIB, "apply_ipsec_config: name=%s, local=%s, remote=%s", name->valuestring, local->valuestring, remote->valuestring);
-    // TODO: Actually create and install IKE/CHILD config using strongSwan APIs
-    // This would involve creating peer_cfg_t, ike_cfg_t, child_cfg_t, etc.
-    // For now, just log and clean up
+    const char *conn_name_str = j_conn_name->valuestring;
+
+    cJSON *j_ike_cfg = cJSON_GetObjectItem(root, "ike_cfg");
+    ike_cfg_t *ike_cfg = parse_ike_cfg_from_json(this, j_ike_cfg);
+    if (!ike_cfg) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse ike_cfg section for %s", conn_name_str);
+        cJSON_Delete(root);
+        return;
+    }
+
+    peer_cfg_create_t peer_create_cfg = {0}; 
+    // TODO: Populate peer_create_cfg from JSON if needed (e.g., DPD, rekey times etc.)
+    
+    peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
+    if (!peer_cfg) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to create peer_cfg for %s", conn_name_str);
+        ike_cfg->destroy(ike_cfg); 
+        cJSON_Delete(root);
+        return;
+    }
+
+    cJSON *j_local_auth = cJSON_GetObjectItem(root, "local_auth");
+    if (j_local_auth) {
+        auth_cfg_t *local_auth_cfg = parse_auth_cfg_from_json(this, j_local_auth, TRUE);
+        if (local_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, local_auth_cfg, TRUE); 
+        } else {
+            DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse local_auth for %s", conn_name_str);
+        }
+    } else { 
+        auth_cfg_t *default_local_auth = auth_cfg_create();
+        default_local_auth->add(default_local_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_local_auth, TRUE);
+    }
+
+    cJSON *j_remote_auth = cJSON_GetObjectItem(root, "remote_auth");
+    if (j_remote_auth) {
+        auth_cfg_t *remote_auth_cfg = parse_auth_cfg_from_json(this, j_remote_auth, FALSE);
+        if (remote_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, remote_auth_cfg, FALSE); 
+        } else {
+            DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse remote_auth for %s", conn_name_str);
+        }
+    } else { 
+        auth_cfg_t *default_remote_auth = auth_cfg_create();
+        default_remote_auth->add(default_remote_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_remote_auth, FALSE);
+    }
+
+    cJSON *j_children = cJSON_GetObjectItem(root, "children");
+    if (!add_children_from_json(this, peer_cfg, j_children)) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Error processing children for %s", conn_name_str);
+        // Consider cleanup if critical
+    }
+
+    DBG1(DBG_LIB, "Successfully parsed peer_cfg '%s' from JSON.", peer_cfg->get_name(peer_cfg));
+
+    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    // Assume insert_last is void and succeeds.
+    this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
+    DBG1(DBG_LIB, "Stored peer_cfg '%s' in managed list.", peer_cfg->get_name(peer_cfg));
+
+    enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
+    child_cfg_t *current_child;
+
+    if (child_enum) {
+        while (child_enum->enumerate(child_enum, &current_child)) {
+            if (current_child->get_start_action(current_child) == ACTION_START) {
+                DBG1(DBG_LIB, "Initiating CHILD_SA '%s' for peer '%s'",
+                     current_child->get_name(current_child), peer_cfg->get_name(peer_cfg));
+                charon->controller->initiate(charon->controller,
+                                             peer_cfg,
+                                             current_child,
+                                             NULL, NULL, 0, 0, FALSE);
+            }
+        }
+        child_enum->destroy(child_enum);
+    }
+    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+
     cJSON_Delete(root);
 }
 
@@ -275,6 +668,25 @@ plugin_t* extsock_plugin_create()
         return NULL; // Indicate plugin creation failure
     }
 
+    this->managed_peer_cfgs = linked_list_create();
+    if (!this->managed_peer_cfgs) {
+        DBG1(DBG_LIB, "Failed to create managed_peer_cfgs list");
+        lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+        this->creds->destroy(this->creds);
+        free(this);
+        return NULL;
+    }
+
+    this->peer_cfgs_mutex = mutex_create(MUTEX_TYPE_DEFAULT);
+    if (!this->peer_cfgs_mutex) {
+        DBG1(DBG_LIB, "Failed to create peer_cfgs_mutex");
+        this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
+        lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+        this->creds->destroy(this->creds);
+        free(this);
+        return NULL;
+    }
+
     // 외부 명령 수신을 위한 소켓 스레드를 생성하고 시작합니다.
     // thread_create는 스레드 메인 함수(socket_thread)와 그 함수에 전달될 인자(this)를 받습니다.
     this->thread = thread_create((thread_main_t)socket_thread, this);
@@ -368,6 +780,8 @@ static void send_event_to_external(const char *event_json)
         if (written < 0) {
             DBG1(DBG_LIB, "Failed to write to socket: %s", strerror(errno));
         }
+    } else { // Handle connect failure
+         DBG1(DBG_LIB, "send_event_to_external: Failed to connect to socket %s: %s", SOCKET_PATH, strerror(errno));
     }
     // 소켓 파일 디스크립터를 닫습니다.
     close(fd);
@@ -378,6 +792,12 @@ static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
 {
     if (ts && buf && buflen > 0)
     {
+        // Use the existing strongSwan way to format traffic selectors
+        // This usually involves library functions or methods on ts object itself.
+        // For example, if traffic_selector_t has a ->to_string method:
+        // ts->to_string(ts, buf, buflen);
+        // Or using a generic function if available.
+        // snprintf with %R is a common pattern in strongSwan for types that support it.
         snprintf(buf, buflen, "%R", ts);
     }
     else if (buf && buflen > 0)
