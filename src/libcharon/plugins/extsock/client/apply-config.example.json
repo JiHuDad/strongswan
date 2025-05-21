@@ -1,0 +1,29 @@
+{
+  "auth": {
+    "id": "client1",
+    "remote_id": "server1",
+    "method": "psk",
+    "psk": "secret123"
+  },
+  "ike": {
+    "version": 2,
+    "proposals": [
+      "aes128-sha256-modp2048"
+    ]
+  },
+  "children": [
+    {
+      "name": "net1",
+      "mode": "tunnel",
+      "proposals": [
+        "aes128gcm16-prfsha256-modp2048"
+      ],
+      "local_ts": ["10.0.0.1/32"],
+      "remote_ts": ["10.0.0.2/32"]
+    }
+  ],
+  "dpd": {
+    "delay": 10,
+    "timeout": 30
+  }
+} 
