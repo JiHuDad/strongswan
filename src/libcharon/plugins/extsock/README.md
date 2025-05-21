@@ -111,9 +111,9 @@ START_DPD vpn-conn1
 
 ---
 
-## 외부 프로그램 예시 (C, cJSON 사용)
+## 외부 프로그램 예시 (C, cJSON 사용, 단일 소켓 연결)
 
-아래는 cJSON 라이브러리를 이용해 JSON 메시지를 만들고, extsock 소켓으로 전송하는 예시입니다.
+아래는 실제 strongSwan extsock 플러그인 구조에 맞는 예시입니다. 외부 프로그램이 소켓에 연결하여 명령을 전송하고, 같은 연결에서 tunnel_up/down 이벤트를 수신합니다.
 
 ```c
 #include <stdio.h>
@@ -127,6 +127,26 @@ START_DPD vpn-conn1
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 
 int main() {
+    int fd;
+    struct sockaddr_un addr;
+    char buf[1024];
+
+    // 1. 소켓 생성 및 strongSwan extsock 플러그인에 연결
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return 1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+        perror("connect");
+        close(fd);
+        return 1;
+    }
+
+    // 2. 명령 전송 (APPLY_CONFIG)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "name", "vpn-conn1");
     cJSON_AddStringToObject(root, "local", "192.168.1.10");
@@ -163,28 +183,53 @@ int main() {
     cmd = malloc(cmd_len);
     snprintf(cmd, cmd_len, "APPLY_CONFIG %s", json_str);
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
-
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        perror("connect");
+    if (write(fd, cmd, strlen(cmd)) < 0) {
+        perror("write");
+        close(fd);
+        free(cmd);
+        cJSON_Delete(root);
+        free(json_str);
         return 1;
     }
-
-    write(fd, cmd, strlen(cmd));
-
-    close(fd);
+    printf("[cmd] Sent config to extsock plugin.\n");
     free(cmd);
     cJSON_Delete(root);
     free(json_str);
 
-    printf("Sent config to extsock plugin.\n");
+    // 3. 같은 연결에서 tunnel_up/down 이벤트 수신
+    while (1) {
+        ssize_t len = read(fd, buf, sizeof(buf)-1);
+        if (len > 0) {
+            buf[len] = '\0';
+            cJSON *json = cJSON_Parse(buf);
+            if (json) {
+                cJSON *event = cJSON_GetObjectItem(json, "event");
+                if (event && cJSON_IsString(event)) {
+                    printf("[event] Received event: %s\n", event->valuestring);
+                    printf("[event] Full JSON: %s\n", buf);
+                } else {
+                    printf("[event] Received non-event JSON: %s\n", buf);
+                }
+                cJSON_Delete(json);
+            } else {
+                printf("[event] Received non-JSON data: %s\n", buf);
+            }
+        } else if (len == 0) {
+            printf("[event] Connection closed by server.\n");
+            break;
+        } else {
+            perror("read");
+            break;
+        }
+    }
+    close(fd);
     return 0;
 }
 ```
+
+- 이 프로그램은 소켓에 연결하여 명령을 전송하고, 같은 연결에서 tunnel_up/down 이벤트를 수신합니다.
+- 실제 strongSwan extsock 플러그인 구조와 동일하게 동작합니다.
+- 여러 명령/이벤트를 주고받으려면, 프로토콜(메시지 구분 등)을 추가로 설계해야 합니다.
 
 ---
 
