@@ -9,7 +9,7 @@
 ## 주요 기능
 - 외부 프로그램이 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)으로 명령을 전송
 - PSK/인증서 기반 인증, 여러 CHILD_SA, IKE/ESP proposal 등 다양한 설정 지원
-- SAD/SPD 이벤트를 외부로 JSON 포맷으로 알림
+- **터널(Child SA) up/down 이벤트를 외부로 JSON 포맷으로 알림**
 - DPD(Dead Peer Detection) 트리거 명령 지원
 
 ---
@@ -78,35 +78,36 @@ START_DPD vpn-conn1
 
 ---
 
-## SAD/SPD 이벤트 알림 포맷 예시
+## 터널(Child SA) up/down 이벤트 알림 포맷 예시
 
-플러그인은 strongSwan 커널 이벤트(예: SA 만료, 정책 추가 등)를 감지하여 외부 프로그램에 아래와 같은 JSON 포맷으로 알림을 전송합니다.
+플러그인은 strongSwan의 CHILD_SA(터널) 상태 변화(up/down)를 감지하여 외부 프로그램에 아래와 같은 JSON 포맷으로 알림을 전송합니다.
 
-### 1. SAD(보안 연결) 삭제 이벤트
+### 1. 터널(Child SA) up 이벤트
 ```json
 {
-  "event": "SAD_DELETE",
+  "event": "tunnel_up",
   "spi": 12345678,
-  "proto": 50,
-  "src": "192.168.1.10",
-  "dst": "203.0.113.5"
+  "proto": "esp",
+  "local_ts": "10.0.0.0/24",
+  "remote_ts": "10.1.0.0/24"
 }
 ```
 
-### 2. SPD(정책) 추가 이벤트
+### 2. 터널(Child SA) down 이벤트
 ```json
 {
-  "event": "SPD_ADD",
-  "src": "10.0.0.0/24",
-  "dst": "10.1.0.0/24",
-  "dir": "out"
+  "event": "tunnel_down",
+  "spi": 12345678,
+  "proto": "esp",
+  "local_ts": "10.0.0.0/24",
+  "remote_ts": "10.1.0.0/24"
 }
 ```
 
-- `event`: 이벤트 종류(SAD_DELETE, SPD_ADD 등)
-- `spi`, `proto`: SA 정보(필요시)
-- `src`, `dst`: 트래픽 선택자(정책/SA에 따라 다름)
-- `dir`: 정책 방향(`in`, `out`, `fwd`)
+- `event`: 이벤트 종류(`tunnel_up`, `tunnel_down`)
+- `spi`: SA의 SPI 값
+- `proto`: 프로토콜(예: "esp", "ah")
+- `local_ts`, `remote_ts`: 트래픽 선택자(로컬/원격)
 
 ---
 
@@ -192,6 +193,7 @@ int main() {
 2. 외부 프로그램에서 위와 같은 방식으로 JSON 메시지를 생성
 3. `APPLY_CONFIG <json>` 또는 `START_DPD <ike_sa_name>` 형태로 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)에 write
 4. strongSwan이 해당 설정을 실시간으로 적용하거나, DPD를 트리거함
+5. 터널(Child SA) up/down 이벤트가 발생하면 외부 프로그램으로 JSON 알림이 전송됨
 
 ---
 
