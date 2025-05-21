@@ -9,7 +9,7 @@
 ## 주요 기능
 - 외부 프로그램이 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)으로 명령을 전송
 - PSK/인증서 기반 인증, 여러 CHILD_SA, IKE/ESP proposal 등 다양한 설정 지원
-- **터널(Child SA) up/down 이벤트를 외부로 JSON 포맷으로 알림**
+- **터널(Child SA) up/down 이벤트를 외부로 JSON 포맷으로 알림** (SPD/SAD 이벤트는 지원하지 않음)
 - DPD(Dead Peer Detection) 트리거 명령 지원
 
 ---
@@ -19,25 +19,20 @@
 ### 1. IPsec 설정 적용
 - **명령어:** `APPLY_CONFIG <json>`
 - **설명:** JSON 포맷의 IPsec/IKE 설정을 strongSwan에 적용합니다.
-- **구현 상태:** 현재 플러그인 코드는 JSON 파싱 후 strongSwan 설정 적용은 TODO(향후 구현 예정)입니다. 실제 적용은 추후 업데이트 예정입니다.
 
-#### 예시 JSON (인증서 기반, 여러 CHILD_SA, proposal 지정)
+#### 예시 JSON (auth, children, proposal 등)
 ```json
 {
   "name": "vpn-conn1",
   "local": "192.168.1.10",
   "remote": "203.0.113.5",
   "auth": {
-    "type": "cert",
-    "local_id": "CN=myuser",
-    "remote_id": "CN=server",
-    "cert_file": "/etc/ipsec.d/certs/myuser.pem",
-    "key_file": "/etc/ipsec.d/private/myuser.key"
+    "type": "psk",
+    "id": "CN=myuser",
+    "secret": "supersecret"
   },
   "ike_proposal": "aes256-sha256-modp2048",
   "esp_proposal": "aes256gcm16-modp2048",
-  "dpd": 30,
-  "rekey_time": 3600,
   "children": [
     {
       "name": "child1",
@@ -50,21 +45,6 @@
       "remote_ts": "10.1.1.0/24"
     }
   ]
-}
-```
-
-#### 예시 JSON (PSK 기반, 단일 CHILD_SA)
-```json
-{
-  "name": "office-vpn",
-  "local": "10.0.0.2",
-  "remote": "198.51.100.10",
-  "psk": "supersecret",
-  "child": {
-    "name": "office-tunnel",
-    "local_ts": "192.168.100.0/24",
-    "remote_ts": "192.168.200.0/24"
-  }
 }
 ```
 
@@ -86,10 +66,18 @@ START_DPD vpn-conn1
 ```json
 {
   "event": "tunnel_up",
+  "ike_sa_name": "vpn-conn1",
   "spi": 12345678,
   "proto": "esp",
+  "mode": "tunnel",
+  "enc_alg": "aes256",
+  "integ_alg": "sha256",
+  "src": "192.168.1.10",
+  "dst": "203.0.113.5",
   "local_ts": "10.0.0.0/24",
-  "remote_ts": "10.1.0.0/24"
+  "remote_ts": "10.1.0.0/24",
+  "direction": "out",
+  "policy_action": "protect"
 }
 ```
 
@@ -97,23 +85,41 @@ START_DPD vpn-conn1
 ```json
 {
   "event": "tunnel_down",
+  "ike_sa_name": "vpn-conn1",
   "spi": 12345678,
   "proto": "esp",
+  "mode": "tunnel",
+  "enc_alg": "aes256",
+  "integ_alg": "sha256",
+  "src": "192.168.1.10",
+  "dst": "203.0.113.5",
   "local_ts": "10.0.0.0/24",
-  "remote_ts": "10.1.0.0/24"
+  "remote_ts": "10.1.0.0/24",
+  "direction": "out",
+  "policy_action": "protect"
 }
 ```
 
 - `event`: 이벤트 종류(`tunnel_up`, `tunnel_down`)
+- `ike_sa_name`: IKE_SA 이름
 - `spi`: SA의 SPI 값
 - `proto`: 프로토콜(예: "esp", "ah")
+- `mode`: 터널 모드("tunnel"/"transport")
+- `enc_alg`: 암호화 알고리즘
+- `integ_alg`: 무결성 알고리즘
+- `src`, `dst`: SA의 소스/목적지 주소
 - `local_ts`, `remote_ts`: 트래픽 선택자(로컬/원격)
+- `direction`: 방향(보통 "out")
+- `policy_action`: 정책(보통 "protect")
 
 ---
 
-## 외부 프로그램 예시 (C, cJSON 사용, 단일 소켓 연결)
+## 외부 프로그램 통합 예제 (APPLY_CONFIG + tunnel_up 후 DPD)
 
-아래는 실제 strongSwan extsock 플러그인 구조에 맞는 예시입니다. 외부 프로그램이 소켓에 연결하여 명령을 전송하고, 같은 연결에서 tunnel_up/down 이벤트를 수신합니다.
+아래 예제는 다음을 모두 포함합니다:
+- 소켓 연결 및 APPLY_CONFIG 명령 전송
+- tunnel_up 이벤트 수신 시 10초 후 START_DPD 자동 전송
+- 모든 이벤트(tunnel_up, tunnel_down 등) 출력
 
 ```c
 #include <stdio.h>
@@ -123,66 +129,65 @@ START_DPD vpn-conn1
 #include <sys/un.h>
 #include <unistd.h>
 #include <cJSON.h>
+#include <pthread.h>
 
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
+
+typedef struct {
+    int fd;
+    char ike_sa_name[128];
+} dpd_args_t;
+
+void* dpd_thread(void* arg) {
+    dpd_args_t* args = (dpd_args_t*)arg;
+    sleep(10); // 10초 대기
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "START_DPD %s", args->ike_sa_name);
+    write(args->fd, cmd, strlen(cmd));
+    printf("[cmd] Sent DPD trigger: %s\n", cmd);
+    free(args);
+    return NULL;
+}
 
 int main() {
     int fd;
     struct sockaddr_un addr;
-    char buf[1024];
+    char buf[2048];
 
-    // 1. 소켓 생성 및 strongSwan extsock 플러그인에 연결
+    // 1. 소켓 생성 및 연결
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("socket");
-        return 1;
-    }
+    if (fd < 0) { perror("socket"); return 1; }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
     if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        perror("connect");
-        close(fd);
-        return 1;
+        perror("connect"); close(fd); return 1;
     }
 
-    // 2. 명령 전송 (APPLY_CONFIG)
+    // 2. APPLY_CONFIG 명령 전송
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "name", "vpn-conn1");
     cJSON_AddStringToObject(root, "local", "192.168.1.10");
     cJSON_AddStringToObject(root, "remote", "203.0.113.5");
+    cJSON *auth = cJSON_CreateObject();
+    cJSON_AddStringToObject(auth, "type", "psk");
+    cJSON_AddStringToObject(auth, "id", "CN=myuser");
+    cJSON_AddStringToObject(auth, "secret", "supersecret");
+    cJSON_AddItemToObject(root, "auth", auth);
     cJSON_AddStringToObject(root, "ike_proposal", "aes256-sha256-modp2048");
     cJSON_AddStringToObject(root, "esp_proposal", "aes256gcm16-modp2048");
-
-    cJSON *auth = cJSON_CreateObject();
-    cJSON_AddStringToObject(auth, "type", "cert");
-    cJSON_AddStringToObject(auth, "local_id", "CN=myuser");
-    cJSON_AddStringToObject(auth, "remote_id", "CN=server");
-    cJSON_AddStringToObject(auth, "cert_file", "/etc/ipsec.d/certs/myuser.pem");
-    cJSON_AddStringToObject(auth, "key_file", "/etc/ipsec.d/private/myuser.key");
-    cJSON_AddItemToObject(root, "auth", auth);
-
     cJSON *children = cJSON_CreateArray();
     cJSON *child1 = cJSON_CreateObject();
     cJSON_AddStringToObject(child1, "name", "child1");
     cJSON_AddStringToObject(child1, "local_ts", "10.0.0.0/24");
     cJSON_AddStringToObject(child1, "remote_ts", "10.1.0.0/24");
     cJSON_AddItemToArray(children, child1);
-
-    cJSON *child2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(child2, "name", "child2");
-    cJSON_AddStringToObject(child2, "local_ts", "10.0.1.0/24");
-    cJSON_AddStringToObject(child2, "remote_ts", "10.1.1.0/24");
-    cJSON_AddItemToArray(children, child2);
-
     cJSON_AddItemToObject(root, "children", children);
-
     char *json_str = cJSON_PrintUnformatted(root);
     char *cmd;
     size_t cmd_len = strlen("APPLY_CONFIG ") + strlen(json_str) + 1;
     cmd = malloc(cmd_len);
     snprintf(cmd, cmd_len, "APPLY_CONFIG %s", json_str);
-
     if (write(fd, cmd, strlen(cmd)) < 0) {
         perror("write");
         close(fd);
@@ -196,7 +201,7 @@ int main() {
     cJSON_Delete(root);
     free(json_str);
 
-    // 3. 같은 연결에서 tunnel_up/down 이벤트 수신
+    // 3. 이벤트 수신 및 tunnel_up 시 DPD 트리거
     while (1) {
         ssize_t len = read(fd, buf, sizeof(buf)-1);
         if (len > 0) {
@@ -207,6 +212,18 @@ int main() {
                 if (event && cJSON_IsString(event)) {
                     printf("[event] Received event: %s\n", event->valuestring);
                     printf("[event] Full JSON: %s\n", buf);
+                    if (strcmp(event->valuestring, "tunnel_up") == 0) {
+                        cJSON *name = cJSON_GetObjectItem(json, "ike_sa_name");
+                        if (name && cJSON_IsString(name)) {
+                            dpd_args_t* args = malloc(sizeof(dpd_args_t));
+                            args->fd = fd;
+                            strncpy(args->ike_sa_name, name->valuestring, sizeof(args->ike_sa_name)-1);
+                            args->ike_sa_name[sizeof(args->ike_sa_name)-1] = '\0';
+                            pthread_t tid;
+                            pthread_create(&tid, NULL, dpd_thread, args);
+                            pthread_detach(tid);
+                        }
+                    }
                 } else {
                     printf("[event] Received non-event JSON: %s\n", buf);
                 }
@@ -225,11 +242,11 @@ int main() {
     close(fd);
     return 0;
 }
-```
 
-- 이 프로그램은 소켓에 연결하여 명령을 전송하고, 같은 연결에서 tunnel_up/down 이벤트를 수신합니다.
-- 실제 strongSwan extsock 플러그인 구조와 동일하게 동작합니다.
-- 여러 명령/이벤트를 주고받으려면, 프로토콜(메시지 구분 등)을 추가로 설계해야 합니다.
+**DPD 동작 확인 방법:**
+- tunnel_up 이벤트 수신 → 10초 후 DPD 트리거
+- strongSwan이 DPD를 수행, 상대방이 응답하지 않으면 SA가 내려가고 tunnel_down 이벤트가 다시 수신됨
+- 즉, DPD가 제대로 동작하면 tunnel_down 이벤트가 자동으로 도착합니다.
 
 ---
 

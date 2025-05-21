@@ -38,6 +38,7 @@
 #include <utils/chunk.h>             // 데이터 청크
 #include <utils/utils/string.h>      // 문자열 유틸리티
 #include <collections/linked_list.h> // 연결 리스트
+#include <utils/enum.h>
 
 // 유닉스 도메인 소켓 파일 경로입니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
@@ -613,16 +614,90 @@ static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t 
     uint8_t proto = child_sa->get_protocol(child_sa); // 프로토콜 (ESP/AH)
     const char *proto_str = (proto == IPPROTO_ESP) ? "esp" : (proto == IPPROTO_AH) ? "ah" : "unknown";
     traffic_selector_t *local_ts, *remote_ts;
+    const char *mode_str = "unknown";
+    const char *enc_alg = "unknown";
+    const char *integ_alg = "none";
+    const char *src_str = "";
+    const char *dst_str = "";
+    const char *direction = "out"; // strongSwan child_sa_t는 보통 outbound 기준
+    const char *policy_action = "protect"; // child_sa는 보호 정책
+    char local_buf[128], remote_buf[128];
+    char src_buf[64], dst_buf[64];
+    const char *ike_sa_name = "";
+    proposal_t *proposal;
+    uint16_t alg, ks;
+
+    // IKE_SA 이름
+    if (ike_sa && ike_sa->get_name) {
+        ike_sa_name = ike_sa->get_name(ike_sa);
+    }
+
+    // 모드
+    switch (child_sa->get_mode(child_sa)) {
+        case MODE_TUNNEL: mode_str = "tunnel"; break;
+        case MODE_TRANSPORT: mode_str = "transport"; break;
+        default: mode_str = "unknown"; break;
+    }
+
+    // 암호화/무결성 알고리즘
+    proposal = child_sa->get_proposal(child_sa);
+    if (proposal) {
+        if (proposal->get_algorithm(proposal, ENCRYPTION_ALGORITHM, &alg, &ks) && alg != ENCR_UNDEFINED) {
+            enc_alg = enum_to_name(encryption_algorithm_names, alg);
+        }
+        if (proposal->get_algorithm(proposal, INTEGRITY_ALGORITHM, &alg, &ks) && alg != AUTH_UNDEFINED) {
+            integ_alg = enum_to_name(integrity_algorithm_names, alg);
+        }
+    }
+
+    // src/dst 주소
+    if (ike_sa) {
+        host_t *src = ike_sa->get_my_host(ike_sa);
+        host_t *dst = ike_sa->get_other_host(ike_sa);
+        if (src) {
+            snprintf(src_buf, sizeof(src_buf), "%H", src);
+            src_str = src_buf;
+        }
+        if (dst) {
+            snprintf(dst_buf, sizeof(dst_buf), "%H", dst);
+            dst_str = dst_buf;
+        }
+    }
+
     // CHILD_SA의 정책(TS) 열거
     enumerator_t *ts_enum = child_sa->create_policy_enumerator(child_sa);
-    if (ts_enum && ts_enum->enumerate(ts_enum, &local_ts, &remote_ts)) { // TS 정보 가져오기 성공 시
-        char local_buf[128], remote_buf[128];
+    if (ts_enum && ts_enum->enumerate(ts_enum, &local_ts, &remote_ts)) {
         ts_to_string(local_ts, local_buf, sizeof(local_buf)); // 로컬 TS 문자열 변환
         ts_to_string(remote_ts, remote_buf, sizeof(remote_buf)); // 원격 TS 문자열 변환
         // 이벤트 JSON 문자열 생성
         snprintf(buf, sizeof(buf),
-            "{\"event\":\"tunnel_%s\",\"spi\":%u,\"proto\":\"%s\",\"local_ts\":\"%s\",\"remote_ts\":\"%s\"}",
-            up ? "up" : "down", spi, proto_str, local_buf, remote_buf);
+            "{\"event\":\"tunnel_%s\"," // up/down
+            "\"ike_sa_name\":\"%s\","  // IKE_SA 이름
+            "\"spi\":%u,"
+            "\"proto\":\"%s\","        // esp/ah
+            "\"mode\":\"%s\","         // tunnel/transport
+            "\"enc_alg\":\"%s\","      // 암호화 알고리즘
+            "\"integ_alg\":\"%s\","    // 무결성 알고리즘
+            "\"src\":\"%s\","          // SA src 주소
+            "\"dst\":\"%s\","          // SA dst 주소
+            "\"local_ts\":\"%s\","     // SPD: 로컬 트래픽 선택자
+            "\"remote_ts\":\"%s\","    // SPD: 원격 트래픽 선택자
+            "\"direction\":\"%s\","    // SPD: 방향
+            "\"policy_action\":\"%s\"}",// SPD: protect
+            up ? "up" : "down",
+            ike_sa_name,
+            spi,
+            proto_str,
+            mode_str,
+            enc_alg,
+            integ_alg,
+            src_str,
+            dst_str,
+            local_buf,
+            remote_buf,
+            direction,
+            policy_action
+        );
         send_event_to_external(buf); // 외부로 이벤트 전송
     }
     if (ts_enum) ts_enum->destroy(ts_enum); // 열거자 해제

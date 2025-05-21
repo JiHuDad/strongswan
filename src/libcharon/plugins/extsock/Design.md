@@ -14,7 +14,7 @@ flowchart LR
     D["Unix Domain Socket\n/tmp/strongswan_extsock.sock"]
 
     A -- "IKE/CHILD SA up/down event" --> B
-    B -- "SA/TS info (JSON)" --> D
+    B -- "Tunnel up/down event (JSON)" --> D
     C -- "Command/Config (JSON)" --> D
     D -- "Config/Command (JSON)" --> B
     B -- "strongSwan API" --> A
@@ -28,14 +28,14 @@ sequenceDiagram
     participant extsock as extsock plugin
     participant charon as charon (IKE/IPsec)
     ExtProg->>extsock: APPLY_CONFIG {json}
-    extsock->>charon: Apply config via strongSwan API (TODO)
+    extsock->>charon: Apply config via strongSwan API
     charon-->>extsock: IKE/CHILD SA up event
-    extsock-->>ExtProg: {event: "tunnel_up", spi, proto, local_ts, remote_ts}
+    extsock-->>ExtProg: {event: "tunnel_up", ...full fields...}
     Note over ExtProg: DPDK configures dataplane with SA/TS info
     ExtProg->>extsock: START_DPD <ike_sa_name>
     extsock->>charon: Trigger DPD
     charon-->>extsock: IKE/CHILD SA down event
-    extsock-->>ExtProg: {event: "tunnel_down", ...}
+    extsock-->>ExtProg: {event: "tunnel_down", ...full fields...}
 ```
 
 3. ClassDiagram
@@ -44,10 +44,18 @@ sequenceDiagram
 classDiagram
     class TunnelEvent {
         +string event
+        +string ike_sa_name
         +uint32 spi
         +string proto
+        +string mode
+        +string enc_alg
+        +string integ_alg
+        +string src
+        +string dst
         +string local_ts
         +string remote_ts
+        +string direction
+        +string policy_action
     }
     class ApplyConfig {
         +string name
