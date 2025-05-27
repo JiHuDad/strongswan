@@ -14,7 +14,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <errno.h>
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 #define BUF_SIZE 4096

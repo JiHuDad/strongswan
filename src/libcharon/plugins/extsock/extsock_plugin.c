@@ -1,7 +1,7 @@
 // 플러그인 자체 헤더 파일입니다.
 #include "extsock_plugin.h"
 // JSON 처리를 위한 cJSON 라이브러리입니다.
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 // strongSwan 핵심 헤더 파일들입니다.
 #include <daemon.h>      // 데몬 관련 (charon 객체)
