@@ -70,3 +70,49 @@ classDiagram
     TunnelEvent <|-- tunnel_down
     ApplyConfig <|-- APPLY_CONFIG
 ```
+
+4. Block diagram
+```mermaid
+flowchart TD
+    %% External Program
+    extprog["External Program (CLI, etc)"]
+
+    %% extsock_plugin main components
+    subgraph "extsock_plugin"
+        socket_thread["socket_thread (Command Listener Thread)"]
+        extsock["extsock_plugin"]
+        managed_cfgs["managed_peer_cfgs (Peer Config List)"]
+        mem_cred["mem_cred (In-Memory Credentials)"]
+    end
+
+    %% strongSwan Core
+    subgraph "charon (strongSwan Core)"
+        charon["charon (IKE Daemon)"]
+        bus["Event Bus"]
+        controller["Controller"]
+        credmgr["Credential Manager"]
+        ike_sa_mgr["IKE_SA Manager"]
+    end
+
+    %% Data/Command Flow
+    extprog -- "Command/Config (JSON, Unix Domain Socket)" --> socket_thread
+    socket_thread -- "Parse & Handle Command" --> extsock
+
+    extsock -- "Apply IPsec Config (apply_ipsec_config)" --> controller
+    extsock -- "Start DPD (start_dpd)" --> ike_sa_mgr
+    extsock -- "Register Credentials" --> credmgr
+    extsock -- "Manage Peer Config" --> managed_cfgs
+    extsock -- "Manage In-Memory Credentials" --> mem_cred
+
+    bus -- "CHILD_SA UP/DOWN Event" --> extsock
+    extsock -- "Event (JSON, Unix Domain Socket)" --> extprog
+
+    %% Dotted lines (internal references)
+    extsock -.-> controller
+    extsock -.-> credmgr
+    extsock -.-> ike_sa_mgr
+    extsock -.-> bus
+    extsock -.-> managed_cfgs
+    extsock -.-> mem_cred
+```
+

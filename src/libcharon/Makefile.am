@@ -759,6 +759,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_VICISOCK
+  SUBDIRS += plugins/vicisock
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/vicisock/libstrongswan-vicisock.la
+endif
+endif
+
 if MONOLITHIC
   SUBDIRS += .
 endif
