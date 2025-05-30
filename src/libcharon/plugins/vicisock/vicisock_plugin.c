@@ -10,13 +10,13 @@
 #include <errno.h>
 #include <utils/debug.h>
 #include <vici/libvici.h>
+#include <settings/settings.h>
 #include <cjson/cJSON.h>
 #include <sa/ike_sa_manager.h>
 #include <sa/ike_sa.h>
 #include <sa/ikev2/tasks/ike_dpd.h>
 
 #define VICISOCK_PATH "/tmp/strongswan_vicisock.sock"
-#define VICI_SOCKET_PATH "/var/run/charon.vici"
 #define VPN_CONF_PATH "/etc/strongswan/vpn.conf"
 
 typedef struct private_vicisock_plugin_t private_vicisock_plugin_t;
@@ -30,87 +30,158 @@ struct private_vicisock_plugin_t {
 
 static void send_event_to_external(const char *json);
 static void handle_load_all(int client);
+static void handle_initiate(int client, cJSON *json);
+static void handle_terminate(int client, cJSON *json);
 static void handle_start_dpd(int client, const char *ike_sa_name);
 static void handle_command(int client, const char *cmd, cJSON *json);
 static void* vicisock_thread(void *arg);
+static bool vicisock_child_updown(listener_t *listener, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up);
 
-// 간단한 key=value 포맷의 vpn.conf를 파싱하여 vici 요청을 빌드
-static vici_req_t* build_vici_load_conn_req_from_conf(const char *confpath)
-{
-    FILE *fp = fopen(confpath, "r");
-    if (!fp) return NULL;
-    vici_req_t *req = vici_begin("load-conn");
-    char line[512];
-    while (fgets(line, sizeof(line), fp)) {
-        char *eq = strchr(line, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char *key = line;
-        char *val = eq + 1;
-        // 개행 제거
-        char *nl = strchr(val, '\n');
-        if (nl) *nl = '\0';
-        vici_add_key_value(req, key, val, strlen(val));
-    }
-    fclose(fp);
-    return req;
+static bool is_list_key(const char *key) {
+    const char *keys[] = {
+        "local_addrs", "remote_addrs", "proposals", "esp_proposals", "ah_proposals",
+        "local_ts", "remote_ts", "vips", "pools", "groups", "cert_policy"
+    };
+    for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++)
+        if (strcmp(keys[i], key) == 0) return TRUE;
+    return FALSE;
 }
 
-static void handle_load_all(int client)
-{
-    vici_conn_t *vici = vici_connect(VICI_SOCKET_PATH);
-    if (!vici) return;
-    vici_req_t *req = build_vici_load_conn_req_from_conf(VPN_CONF_PATH);
-    if (!req) {
-        vici_disconnect(vici);
-        return;
+static void add_list_key(vici_req_t *req, const char *key, const char *value) {
+    vici_begin_list(req, (char*)key);
+    char *tmp = strdup(value);
+    char *token = strtok(tmp, ",");
+    while (token) {
+        vici_add_list_itemf(req, "%s", token);
+        token = strtok(NULL, ",");
     }
-    vici_res_t *res = vici_submit(req, vici);
-    if (res) {
-        const char *msg = "{\"result\":\"ok\"}";
-        ssize_t written = write(client, msg, strlen(msg));
-        if (written < 0) {
-            DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
-        }
-        vici_free_res(res);
-    } else {
-        const char *msg = "{\"result\":\"fail\"}";
-        ssize_t written = write(client, msg, strlen(msg));
-        if (written < 0) {
-            DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
-        }
-    }
-    vici_free_req(req);
-    vici_disconnect(vici);
+    free(tmp);
+    vici_end_list(req);
 }
 
-static void handle_start_dpd(int client, const char *ike_sa_name)
-{
-    ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
-        charon->ike_sa_manager, (char*)ike_sa_name, ID_MATCH_PERFECT);
-    if (!ike_sa)
-    {
-        DBG1(DBG_LIB, "vicisock: IKE_SA '%s' not found", ike_sa_name);
-        const char *msg = "{\"result\":\"fail\",\"reason\":\"not found\"}";
-        ssize_t written = write(client, msg, strlen(msg));
-        if (written < 0) {
-            DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
+static bool add_key_values(vici_req_t *req, settings_t *cfg, const char *section) {
+    enumerator_t *enumerator = cfg->create_key_value_enumerator(cfg, (char*)section);
+    char *key, *value;
+    while (enumerator->enumerate(enumerator, &key, &value)) {
+        if (is_list_key(key)) {
+            add_list_key(req, key, value);
+        } else {
+            vici_add_key_valuef(req, key, "%s", value);
         }
-        return;
     }
-    ike_dpd_t *dpd = ike_dpd_create(TRUE);
-    ike_sa->queue_task(ike_sa, (task_t*)dpd);
-    const char *msg = "{\"result\":\"ok\"}";
+    enumerator->destroy(enumerator);
+    return TRUE;
+}
+
+static bool add_sections(vici_req_t *req, settings_t *cfg, const char *section) {
+    enumerator_t *enumerator = cfg->create_section_enumerator(cfg, (char*)section);
+    char *name, buf[256];
+    while (enumerator->enumerate(enumerator, &name)) {
+        vici_begin_section(req, name);
+        snprintf(buf, sizeof(buf), "%s.%s", section, name);
+        add_key_values(req, cfg, buf);
+        add_sections(req, cfg, buf);
+        vici_end_section(req);
+    }
+    enumerator->destroy(enumerator);
+    return TRUE;
+}
+
+static bool load_all_conns_from_vpnconf(void) {
+    settings_t *cfg = settings_create(VPN_CONF_PATH);
+    if (!cfg) {
+        DBG1(DBG_LIB, "vicisock: failed to load %s", VPN_CONF_PATH);
+        return FALSE;
+    }
+    enumerator_t *conns = cfg->create_section_enumerator(cfg, "connections");
+    char *conn_name;
+    bool ok = TRUE;
+    while (conns->enumerate(conns, &conn_name)) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "connections.%s", conn_name);
+        vici_req_t *req = vici_begin("load-conn");
+        vici_begin_section(req, conn_name);
+        add_key_values(req, cfg, buf);
+        add_sections(req, cfg, buf);
+        vici_end_section(req);
+        vici_res_t *res = vici_submit(req, NULL); // NULL: 내부 연결
+        if (!res) {
+            DBG1(DBG_LIB, "vicisock: vici_submit failed for conn %s", conn_name);
+            ok = FALSE;
+        } else {
+            vici_free_res(res);
+        }
+        vici_free_req(req);
+    }
+    conns->destroy(conns);
+    cfg->destroy(cfg);
+    return ok;
+}
+
+static void handle_load_all(int client) {
+    bool ok = load_all_conns_from_vpnconf();
+    const char *msg = ok ? "{\"result\":\"ok\"}" : "{\"result\":\"fail\"}";
     ssize_t written = write(client, msg, strlen(msg));
     if (written < 0) {
         DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
     }
 }
 
-static void handle_command(int client, const char *cmd, cJSON *json)
-{
+static void handle_initiate(int client, cJSON *json) {
+    cJSON *ikeitem = cJSON_GetObjectItem(json, "ike");
+    if (!ikeitem || !cJSON_IsString(ikeitem)) return;
+    vici_req_t *req = vici_begin("initiate");
+    vici_add_key_value(req, "ike", ikeitem->valuestring, strlen(ikeitem->valuestring));
+    vici_res_t *res = vici_submit(req, NULL);
+    const char *msg = (res) ? "{\"result\":\"ok\"}" : "{\"result\":\"fail\"}";
+    if (res) vici_free_res(res);
+    vici_free_req(req);
+    ssize_t written = write(client, msg, strlen(msg));
+    if (written < 0) {
+        DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
+    }
+}
+
+static void handle_terminate(int client, cJSON *json) {
+    cJSON *ikeitem = cJSON_GetObjectItem(json, "ike");
+    if (!ikeitem || !cJSON_IsString(ikeitem)) return;
+    vici_req_t *req = vici_begin("terminate");
+    vici_add_key_value(req, "ike", ikeitem->valuestring, strlen(ikeitem->valuestring));
+    vici_res_t *res = vici_submit(req, NULL);
+    const char *msg = (res) ? "{\"result\":\"ok\"}" : "{\"result\":\"fail\"}";
+    if (res) vici_free_res(res);
+    vici_free_req(req);
+    ssize_t written = write(client, msg, strlen(msg));
+    if (written < 0) {
+        DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
+    }
+}
+
+static void handle_start_dpd(int client, const char *ike_sa_name) {
+    ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
+        charon->ike_sa_manager, (char*)ike_sa_name, ID_MATCH_PERFECT);
+    const char *msg = NULL;
+    if (!ike_sa) {
+        DBG1(DBG_LIB, "vicisock: IKE_SA '%s' not found", ike_sa_name);
+        msg = "{\"result\":\"fail\",\"reason\":\"not found\"}";
+    } else {
+        ike_dpd_t *dpd = ike_dpd_create(TRUE);
+        ike_sa->queue_task(ike_sa, (task_t*)dpd);
+        msg = "{\"result\":\"ok\"}";
+    }
+    ssize_t written = write(client, msg, strlen(msg));
+    if (written < 0) {
+        DBG1(DBG_LIB, "vicisock: write failed: %s", strerror(errno));
+    }
+}
+
+static void handle_command(int client, const char *cmd, cJSON *json) {
     if (strcmp(cmd, "load-all") == 0) {
         handle_load_all(client);
+    } else if (strcmp(cmd, "initiate") == 0) {
+        handle_initiate(client, json);
+    } else if (strcmp(cmd, "terminate") == 0) {
+        handle_terminate(client, json);
     } else if (strcmp(cmd, "start-dpd") == 0) {
         cJSON *ikeitem = cJSON_GetObjectItem(json, "ike_sa");
         if (ikeitem && cJSON_IsString(ikeitem)) {
