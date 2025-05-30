@@ -766,6 +766,10 @@ if MONOLITHIC
 endif
 endif
 
+if USE_KERNEL_DUMMY
+SUBDIRS += plugins/kernel_dummy
+endif
+
 if MONOLITHIC
   SUBDIRS += .
 endif

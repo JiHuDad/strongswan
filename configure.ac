@@ -274,6 +274,7 @@ ARG_ENABL_SET([kernel-pfkey],   [enable the PF_KEY kernel interface.])
 ARG_ENABL_SET([kernel-pfroute], [enable the PF_ROUTE kernel interface.])
 ARG_ENABL_SET([kernel-iph],     [enable the Windows IP Helper based networking backend.])
 ARG_ENABL_SET([kernel-libipsec],[enable the libipsec kernel interface.])
+ARG_ENABL_SET([kernel-dummy],   [enable dummy kernel interface plugin for DPDK integration.])
 ARG_ENABL_SET([kernel-wfp],     [enable the Windows Filtering Platform IPsec backend.])
 ARG_DISBL_SET([socket-default], [disable default socket implementation for charon.])
 ARG_ENABL_SET([socket-dynamic], [enable dynamic socket implementation for charon])
@@ -1659,6 +1660,7 @@ ADD_PLUGIN([kernel-iph],           [c charon])
 ADD_PLUGIN([kernel-pfkey],         [c charon nm cmd])
 ADD_PLUGIN([kernel-pfroute],       [c charon nm cmd])
 ADD_PLUGIN([kernel-netlink],       [c charon nm cmd])
+ADD_PLUGIN([kernel-dummy],         [c charon])
 ADD_PLUGIN([selinux],              [c charon nm cmd])
 ADD_PLUGIN([resolve],              [c charon cmd])
 ADD_PLUGIN([save-keys],            [c])
@@ -1967,6 +1969,7 @@ AM_CONDITIONAL(USE_TOX, test "x$TOX" != x)
 AM_CONDITIONAL(USE_PY_TEST, test "x$PY_TEST" != x -a "x$TOX" = x)
 AM_CONDITIONAL(USE_EXTSOCK, test "x$enable_extsock" = xyes)
 AM_CONDITIONAL(USE_VICISOCK, test "x$enable_vicisock" = xyes)
+AM_CONDITIONAL(USE_KERNEL_DUMMY, test x$kernel_dummy = xtrue)
 
 # ========================
 #  set global definitions
@@ -2185,6 +2188,7 @@ AC_CONFIG_FILES([
 	src/libcharon/plugins/kernel_libipsec/Makefile
 	src/libcharon/plugins/kernel_wfp/Makefile
 	src/libcharon/plugins/kernel_iph/Makefile
+	src/libcharon/plugins/kernel_dummy/Makefile
 	src/libcharon/plugins/whitelist/Makefile
 	src/libcharon/plugins/ext_auth/Makefile
 	src/libcharon/plugins/lookip/Makefile
