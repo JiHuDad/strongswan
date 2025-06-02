@@ -15,6 +15,10 @@
 #include <sa/ike_sa_manager.h>
 #include <sa/ike_sa.h>
 #include <sa/ikev2/tasks/ike_dpd.h>
+#include <encoding/payloads/proposal_substructure.h>
+#include <selectors/traffic_selector.h>
+#include <crypto/proposal/proposal.h>
+#include <utils/chunk.h>
 
 #define VICISOCK_PATH "/tmp/strongswan_vicisock.sock"
 #define VPN_CONF_PATH "/etc/strongswan/vpn.conf"
@@ -231,14 +235,90 @@ static void send_event_to_external(const char *json)
 
 static bool vicisock_child_updown(listener_t *listener, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up)
 {
-    char json[256];
-    snprintf(json, sizeof(json),
-        "{\"event\":\"tunnel-%s\",\"ike\":\"%s\",\"child\":\"%s\",\"spi\":%u}",
-        up ? "up" : "down",
-        ike_sa ? ike_sa->get_name(ike_sa) : "",
-        child_sa ? child_sa->get_name(child_sa) : "",
-        child_sa ? child_sa->get_spi(child_sa, TRUE) : 0);
-    send_event_to_external(json);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", up ? "tunnel-up" : "tunnel-down");
+    cJSON_AddStringToObject(root, "ike", ike_sa ? ike_sa->get_name(ike_sa) : "");
+    cJSON_AddStringToObject(root, "child", child_sa ? child_sa->get_name(child_sa) : "");
+
+    if (child_sa) {
+        // SA/SAD 정보
+        cJSON *sa = cJSON_CreateObject();
+        cJSON_AddNumberToObject(sa, "spi_in", child_sa->get_spi(child_sa, TRUE));
+        cJSON_AddNumberToObject(sa, "spi_out", child_sa->get_spi(child_sa, FALSE));
+        cJSON_AddNumberToObject(sa, "protocol", child_sa->get_protocol(child_sa));
+        cJSON_AddNumberToObject(sa, "mode", child_sa->get_mode(child_sa));
+        cJSON_AddNumberToObject(sa, "reqid", child_sa->get_reqid(child_sa));
+        cJSON_AddNumberToObject(sa, "mark_in", child_sa->get_mark(child_sa, TRUE).value);
+        cJSON_AddNumberToObject(sa, "mark_out", child_sa->get_mark(child_sa, FALSE).value);
+        cJSON_AddNumberToObject(sa, "if_id_in", child_sa->get_if_id(child_sa, TRUE));
+        cJSON_AddNumberToObject(sa, "if_id_out", child_sa->get_if_id(child_sa, FALSE));
+
+        // 알고리즘/키 정보
+        proposal_t *proposal = child_sa->get_proposal(child_sa);
+        if (proposal) {
+            uint16_t alg, keylen;
+            // 암호화
+            if (proposal->get_algorithm(proposal, ENCRYPTION_ALGORITHM, &alg, &keylen)) {
+                cJSON_AddNumberToObject(sa, "encr_alg", alg);
+                cJSON_AddNumberToObject(sa, "encr_keylen", keylen);
+            }
+            // 무결성
+            if (proposal->get_algorithm(proposal, INTEGRITY_ALGORITHM, &alg, &keylen)) {
+                cJSON_AddNumberToObject(sa, "integ_alg", alg);
+            }
+        }
+        // 실제 키: child_sa_t의 encr_i, encr_r, integ_i, integ_r
+        extern chunk_t child_sa_get_encr_i(child_sa_t *this);
+        extern chunk_t child_sa_get_encr_r(child_sa_t *this);
+        extern chunk_t child_sa_get_integ_i(child_sa_t *this);
+        extern chunk_t child_sa_get_integ_r(child_sa_t *this);
+        chunk_t encr_i = child_sa_get_encr_i(child_sa);
+        chunk_t encr_r = child_sa_get_encr_r(child_sa);
+        chunk_t integ_i = child_sa_get_integ_i(child_sa);
+        chunk_t integ_r = child_sa_get_integ_r(child_sa);
+        if (encr_i.ptr && encr_i.len) {
+            char *b64 = chunk_to_base64(encr_i, NULL).ptr;
+            cJSON_AddStringToObject(sa, "encr_i", b64);
+            free(b64);
+        }
+        if (encr_r.ptr && encr_r.len) {
+            char *b64 = chunk_to_base64(encr_r, NULL).ptr;
+            cJSON_AddStringToObject(sa, "encr_r", b64);
+            free(b64);
+        }
+        if (integ_i.ptr && integ_i.len) {
+            char *b64 = chunk_to_base64(integ_i, NULL).ptr;
+            cJSON_AddStringToObject(sa, "integ_i", b64);
+            free(b64);
+        }
+        if (integ_r.ptr && integ_r.len) {
+            char *b64 = chunk_to_base64(integ_r, NULL).ptr;
+            cJSON_AddStringToObject(sa, "integ_r", b64);
+            free(b64);
+        }
+        cJSON_AddItemToObject(root, "sa", sa);
+
+        // SPD/정책 정보
+        cJSON *spd = cJSON_CreateArray();
+        for (int local = 0; local <= 1; local++) {
+            enumerator_t *ts_enum = child_sa->create_ts_enumerator(child_sa, local);
+            traffic_selector_t *ts;
+            while (ts_enum && ts_enum->enumerate(ts_enum, &ts)) {
+                cJSON *tsj = cJSON_CreateObject();
+                char buf[128];
+                snprintf(buf, sizeof(buf), "%R", ts);
+                cJSON_AddStringToObject(tsj, local ? "local_ts" : "remote_ts", buf);
+                cJSON_AddItemToArray(spd, tsj);
+            }
+            if (ts_enum) ts_enum->destroy(ts_enum);
+        }
+        cJSON_AddItemToObject(root, "spd", spd);
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    send_event_to_external(json_str);
+    free(json_str);
+    cJSON_Delete(root);
     return TRUE;
 }
 
