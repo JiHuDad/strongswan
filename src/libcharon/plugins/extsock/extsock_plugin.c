@@ -76,7 +76,7 @@ typedef struct segw_backup_info_t {
 // 정적 함수 전방 선언입니다.
 // --- SEGW 백업 관련 함수 전방 선언 ---
 static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool to_second_segw);
-static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *addr);
+static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *peer_name);
 static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_name, const char *first_segw, const char *second_segw);
 static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *peer_name);
 static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *peer_name);
@@ -125,6 +125,7 @@ static void start_dpd(const char *ike_sa_name)
     DBG1(DBG_LIB, "start_dpd: Starting DPD for IKE_SA '%s'", ike_sa_name);
     ike_dpd_t *dpd = ike_dpd_create(TRUE); // DPD 태스크를 생성합니다.
     ike_sa->queue_task(ike_sa, (task_t*)dpd); // IKE_SA의 태스크 큐에 추가합니다.
+    charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa); // IKE_SA 체크인
 }
 
 // JSON 문자열 배열을 쉼표로 구분된 단일 C 문자열로 변환합니다.
@@ -306,7 +307,7 @@ static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJ
             identification_t *psk_identity = NULL;
             if (j_id && cJSON_IsString(j_id)) { // ID가 지정된 경우
                  psk_identity = identification_create_from_string(j_id->valuestring);
-                 auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, identification_create_from_string(j_id->valuestring)); // ID 설정
+                 auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, psk_identity->clone(psk_identity)); // ID 설정 (복제본 사용)
             } else { // ID 없으면 "%any"
                 psk_identity = identification_create_from_string("%any");
             }
@@ -560,18 +561,24 @@ static bool apply_ipsec_config(private_extsock_plugin_t *this, const char *confi
             store_segw_backup(this, name->valuestring, first_segw, second_segw);
         }
 
-        /* Add to managed list */
+        /* Add to managed list first */
         this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
         this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
         this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
 
-        // 실제 strongSwan charon에 적용
+        // strongSwan backend에 peer_cfg 등록
+        lib->settings->set_str(lib->settings, "%s.charon.plugins.peer_cfg.managed", name->valuestring, "yes");
+        
+        // 실제 strongSwan charon에 적용 (peer_cfg 등록 후)
         if (charon->controller && charon->controller->initiate) {
             enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
             child_cfg_t *child_cfg = NULL;
             if (child_enum->enumerate(child_enum, &child_cfg)) {
-                charon->controller->initiate(
+                status_t status = charon->controller->initiate(
                     charon->controller, peer_cfg, child_cfg, NULL, NULL, LEVEL_CTRL, 0, FALSE);
+                if (status != SUCCESS) {
+                    DBG1(DBG_CFG, "Failed to initiate connection for peer %s (status=%d)", name->valuestring, status);
+                }
             }
             child_enum->destroy(child_enum);
         }
@@ -665,31 +672,32 @@ static void* socket_thread(private_extsock_plugin_t *this)
 // 터널 상태 변경 시 외부로 JSON 이벤트를 전송합니다.
 static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up)
 {
-    private_extsock_plugin_t *plugin = (private_extsock_plugin_t*)this; // 플러그인 내부 구조체로 캐스팅
+    (void)this; // 사용되지 않는 매개변수 표시
+    private_extsock_plugin_t *plugin = g_extsock_plugin; // 전역 플러그인 인스턴스 사용
+    if (!plugin) {
+        DBG1(DBG_LIB, "extsock plugin instance not available");
+        return TRUE; // 이벤트 처리를 계속하도록 TRUE 반환
+    }
     if (!up) // 터널이 DOWN될 때만 SEGW 전환 로직 수행
     {
         peer_cfg_t *peer_cfg = ike_sa->get_peer_cfg(ike_sa); // IKE_SA에서 피어 설정 가져옴
         if (peer_cfg)
         {
-            ike_cfg_t *ike_cfg = peer_cfg->get_ike_cfg(peer_cfg); // 피어 설정에서 IKE 설정 가져옴
-            if (ike_cfg)
+            const char *peer_name = peer_cfg->get_name(peer_cfg); // 피어명 획득
+            if (peer_name)
             {
-                char *remote_addr = ike_cfg->get_other_addr(ike_cfg); // 원격 주소 문자열 획득 (내부 멤버)
-                if (remote_addr)
+                segw_backup_info_t *backup = find_segw_backup(plugin, peer_name); // SEGW 백업 정보 조회
+                if (backup && backup->is_active) // 현재 2nd SEGW가 활성 상태라면
                 {
-                    segw_backup_info_t *backup = find_segw_backup(plugin, remote_addr); // SEGW 백업 정보 조회
-                    if (backup && backup->is_active) // 현재 2nd SEGW가 활성 상태라면
-                    {
-                        /* Switch back to first SEGW */
-                        switch_to_first_segw(plugin, backup->peer_name); // 1st SEGW로 전환
-                        // 2nd segw를 1st segw로 변경 후, 다시 설정을 내림
-                        apply_segw_config(plugin, backup->peer_name); // strongSwan에 재적용
-                    }
-                    else if (backup && !backup->is_active) // 현재 1st SEGW가 활성 상태라면
-                    {
-                        switch_to_second_segw(plugin, backup->peer_name); // 2nd SEGW로 전환
-                        apply_segw_config(plugin, backup->peer_name); // strongSwan에 재적용
-                    }
+                    /* Switch back to first SEGW */
+                    switch_to_first_segw(plugin, backup->peer_name); // 1st SEGW로 전환
+                    // 2nd segw를 1st segw로 변경 후, 다시 설정을 내림
+                    apply_segw_config(plugin, backup->peer_name); // strongSwan에 재적용
+                }
+                else if (backup && !backup->is_active) // 현재 1st SEGW가 활성 상태라면
+                {
+                    switch_to_second_segw(plugin, backup->peer_name); // 2nd SEGW로 전환
+                    apply_segw_config(plugin, backup->peer_name); // strongSwan에 재적용
                 }
             }
         }
@@ -835,6 +843,9 @@ static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
 // 해시 함수 (peer_name 문자열을 해시값으로 변환)
 static uint32_t hash_peer_name(const char *peer_name)
 {
+    if (!peer_name) {
+        return 0; // NULL인 경우 기본값 반환
+    }
     uint32_t hash = 0;
     while (*peer_name) {
         hash = hash * 31 + *peer_name++;
@@ -845,23 +856,29 @@ static uint32_t hash_peer_name(const char *peer_name)
 // SEGW 전환을 위한 공통 함수
 static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool to_second_segw)
 {
-    char *current_addr = NULL; // 현재 원격 주소 포인터
     segw_backup_info_t *backup_info = NULL; // SEGW 백업 정보 포인터
     bool success = FALSE; // 전환 성공 여부 플래그
 
-    /* Get current remote address */
-    current_addr = ike_sa->get_ike_cfg(ike_sa)->get_other_addr(ike_sa->get_ike_cfg(ike_sa)); // IKE_SA에서 현재 원격 주소 획득
-    if (!current_addr) // 주소 획득 실패 시
+    /* Get peer name */
+    peer_cfg_t *peer_cfg = ike_sa->get_peer_cfg(ike_sa); // IKE_SA에서 피어 설정 획득
+    if (!peer_cfg) // 피어 설정 획득 실패 시
     {
-        DBG1(DBG_CFG, "Failed to get current remote address"); // 에러 로그 출력
+        DBG1(DBG_CFG, "Failed to get peer config"); // 에러 로그 출력
+        return FALSE; // 실패 반환
+    }
+    
+    const char *peer_name = peer_cfg->get_name(peer_cfg); // 피어명 획득
+    if (!peer_name) // 피어명 획득 실패 시
+    {
+        DBG1(DBG_CFG, "Failed to get peer name"); // 에러 로그 출력
         return FALSE; // 실패 반환
     }
 
     /* Find backup info */
-    backup_info = find_segw_backup(this, current_addr); // 현재 주소로 백업 정보 검색
+    backup_info = find_segw_backup(this, peer_name); // 피어명으로 백업 정보 검색
     if (!backup_info) // 백업 정보 없음
     {
-        DBG1(DBG_CFG, "No backup info found for address %s", current_addr); // 에러 로그 출력
+        DBG1(DBG_CFG, "No backup info found for peer %s", peer_name); // 에러 로그 출력
         return FALSE; // 실패 반환
     }
 
@@ -1021,8 +1038,8 @@ static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_n
     backup->is_active = FALSE; // 초기 상태는 1st SEGW 활성
     backup->next = NULL; // 연결 리스트 다음 포인터 초기화
 
-    /* Calculate hash */
-    uint32_t hash = hash_peer_name(first_segw ? first_segw : second_segw) % SEGW_HASH_SIZE; // 해시값 계산
+    /* Calculate hash based on peer_name */
+    uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE; // 피어명으로 해시값 계산
 
     /* Store in hash table */
     this->segw_hash_mutex->lock(this->segw_hash_mutex); // 해시 테이블 뮤텍스 잠금
@@ -1035,16 +1052,16 @@ static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_n
 }
 
 // 2nd SEGW 백업 정보를 찾습니다.
-static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *addr)
+static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *peer_name)
 {
-    uint32_t hash = hash_peer_name(addr) % SEGW_HASH_SIZE; // 주소로 해시값 계산
+    uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE; // 피어명으로 해시값 계산
     segw_backup_info_t *backup = NULL; // 백업 정보 포인터 초기화
 
     this->segw_hash_mutex->lock(this->segw_hash_mutex); // 해시 테이블 뮤텍스 잠금
     backup = this->segw_hash[hash]; // 해당 해시 슬롯의 첫 노드 획득
     while (backup) // 연결 리스트 순회
     {
-        if (streq(backup->first_segw_addr, addr) || streq(backup->second_segw_addr, addr)) // 1st 또는 2nd SEGW 주소가 일치하는지 확인
+        if (backup->peer_name && streq(backup->peer_name, peer_name)) // 피어명이 일치하는지 확인 (NULL 체크 추가)
         {
             break; // 일치하면 루프 탈출
         }
@@ -1070,6 +1087,9 @@ static int extsock_plugin_get_features(plugin_t *plugin, plugin_feature_t **feat
     return 0;
 }
 
+// 전역 플러그인 인스턴스 포인터 (리스너에서 접근용)
+static private_extsock_plugin_t *g_extsock_plugin = NULL;
+
 // CHILD_SA UP/DOWN 이벤트 처리를 위한 리스너 인스턴스입니다.
 static listener_t extsock_listener = {
     .child_updown = extsock_child_updown,
@@ -1089,6 +1109,9 @@ plugin_t* extsock_plugin_create()
     this->public.get_features = extsock_plugin_get_features;
     this->public.destroy = (void*)extsock_plugin_destroy;
 
+    // 전역 플러그인 인스턴스 설정
+    g_extsock_plugin = this;
+    
     // 리스너 직접 등록
     charon->bus->add_listener(charon->bus, &extsock_listener);
 
@@ -1141,6 +1164,9 @@ plugin_t* extsock_plugin_create()
 // extsock 플러그인 소멸자 함수입니다. strongSwan 언로드 시 호출됩니다.
 void extsock_plugin_destroy(private_extsock_plugin_t *this)
 {
+    // 전역 플러그인 인스턴스 해제
+    g_extsock_plugin = NULL;
+    
     this->running = FALSE; // 소켓 스레드 루프 종료 유도
 
     if (this->thread) { // 스레드가 존재하면
@@ -1159,7 +1185,7 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
     charon->bus->remove_listener(charon->bus, &extsock_listener);
 
     // 관리되는 피어 설정들 해제
-    if (this->managed_peer_cfgs) {
+    if (this->managed_peer_cfgs && this->peer_cfgs_mutex) {
         this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
         peer_cfg_t *cfg_to_destroy;
         // 리스트에서 모든 peer_cfg를 꺼내어 각각 destroy 호출
@@ -1168,6 +1194,14 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
         }
         this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
         this->managed_peer_cfgs->destroy(this->managed_peer_cfgs); // 리스트 자체 해제
+        this->managed_peer_cfgs = NULL;
+    } else if (this->managed_peer_cfgs) {
+        // mutex가 없는 경우 직접 해제
+        peer_cfg_t *cfg_to_destroy;
+        while(this->managed_peer_cfgs->remove_first(this->managed_peer_cfgs, (void**)&cfg_to_destroy) == SUCCESS) {
+            cfg_to_destroy->destroy(cfg_to_destroy);
+        }
+        this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
         this->managed_peer_cfgs = NULL;
     }
 
@@ -1214,8 +1248,9 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
  */
 static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer_name)
 {
-    if (!peer_name) {
-        DBG1(DBG_CFG, "apply_segw_config: peer_name is NULL");
+    if (!peer_name || !plugin || !plugin->peer_cfgs_mutex || !plugin->managed_peer_cfgs) {
+        DBG1(DBG_CFG, "apply_segw_config: invalid parameters (peer_name=%s, plugin=%p)", 
+             peer_name ? peer_name : "NULL", plugin);
         return FALSE;
     }
     bool result = FALSE;
