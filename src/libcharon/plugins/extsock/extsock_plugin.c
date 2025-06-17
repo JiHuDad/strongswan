@@ -69,7 +69,6 @@ typedef struct segw_backup_info_t {
     char *peer_name;           // 피어 설정 이름
     char *second_segw_addr;    // 2nd SEGW 주소
     char *first_segw_addr;     // 1st SEGW 주소
-    char *local_addr;          // 로컬 주소
     bool is_active;            // 현재 2nd SEGW가 활성화되어 있는지 여부
     struct segw_backup_info_t *next; // 해시 체이닝을 위한 포인터
 } segw_backup_info_t;
@@ -873,7 +872,7 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
     /* Create new IKE config with current settings */
     ike_cfg_create_t ike_create_cfg = { // 새 IKE 설정 생성용 구조체 초기화
         .version = current_cfg->get_version(current_cfg), // 현재 IKE 버전 복사
-        .local = strdup(backup_info->local_addr), // 로컬 주소 복사 (동적 할당)
+        .local = strdup(current_cfg->get_my_addr(current_cfg)), // 현재 실제 로컬 주소 복사
         .local_port = current_cfg->get_my_port(current_cfg), // 로컬 포트 복사
         .remote = strdup(to_second_segw ? backup_info->second_segw_addr : backup_info->first_segw_addr), // 전환 대상 SEGW 주소 복사
         .remote_port = current_cfg->get_other_port(current_cfg), // 원격 포트 복사
@@ -999,7 +998,6 @@ static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_n
     backup->peer_name = strdup(peer_name); // 피어명 복사 (동적 할당)
     backup->first_segw_addr = first_segw ? strdup(first_segw) : NULL; // 1st SEGW 주소 복사 (있는 경우)
     backup->second_segw_addr = second_segw ? strdup(second_segw) : NULL; // 2nd SEGW 주소 복사 (있는 경우)
-    backup->local_addr = strdup("%any");  // 기본값으로 %any 사용
     backup->is_active = FALSE; // 초기 상태는 1st SEGW 활성
     backup->next = NULL; // 연결 리스트 다음 포인터 초기화
 
@@ -1169,7 +1167,6 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
                 free(backup->peer_name);
                 free(backup->first_segw_addr);
                 free(backup->second_segw_addr);
-                free(backup->local_addr);
                 free(backup);
                 backup = next;
             }
