@@ -111,6 +111,9 @@ struct private_extsock_plugin_t {
     mutex_t *segw_hash_mutex;          // 해시 테이블 접근 뮤텍스
 };
 
+// 전역 플러그인 인스턴스 포인터 (리스너에서 접근용)
+static private_extsock_plugin_t *g_extsock_plugin = NULL;
+
 // 지정된 IKE_SA에 대해 DPD(Dead Peer Detection)를 시작합니다.
 static void start_dpd(const char *ike_sa_name)
 {
@@ -573,14 +576,26 @@ static bool apply_ipsec_config(private_extsock_plugin_t *this, const char *confi
         if (charon->controller && charon->controller->initiate) {
             enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
             child_cfg_t *child_cfg = NULL;
-            if (child_enum->enumerate(child_enum, &child_cfg)) {
+            int initiated_children = 0;
+            int total_children = 0;
+            
+            while (child_enum->enumerate(child_enum, &child_cfg)) {
+                total_children++;
                 status_t status = charon->controller->initiate(
                     charon->controller, peer_cfg, child_cfg, NULL, NULL, LEVEL_CTRL, 0, FALSE);
-                if (status != SUCCESS) {
-                    DBG1(DBG_CFG, "Failed to initiate connection for peer %s (status=%d)", name->valuestring, status);
+                if (status == SUCCESS) {
+                    initiated_children++;
+                    DBG1(DBG_CFG, "Successfully initiated child '%s' for peer %s", 
+                         child_cfg->get_name(child_cfg), name->valuestring);
+                } else {
+                    DBG1(DBG_CFG, "Failed to initiate child '%s' for peer %s (status=%d)", 
+                         child_cfg->get_name(child_cfg), name->valuestring, status);
                 }
             }
             child_enum->destroy(child_enum);
+            
+            DBG1(DBG_CFG, "Initiated %d/%d children for peer %s", 
+                 initiated_children, total_children, name->valuestring);
         }
     }
 
@@ -1087,9 +1102,6 @@ static int extsock_plugin_get_features(plugin_t *plugin, plugin_feature_t **feat
     return 0;
 }
 
-// 전역 플러그인 인스턴스 포인터 (리스너에서 접근용)
-static private_extsock_plugin_t *g_extsock_plugin = NULL;
-
 // CHILD_SA UP/DOWN 이벤트 처리를 위한 리스너 인스턴스입니다.
 static listener_t extsock_listener = {
     .child_updown = extsock_child_updown,
@@ -1255,22 +1267,35 @@ static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer
     }
     bool result = FALSE;
     peer_cfg_t *peer_cfg = NULL;
+    int initiated_children = 0;
+    int total_children = 0;
+    
     plugin->peer_cfgs_mutex->lock(plugin->peer_cfgs_mutex);
     enumerator_t *enumerator = plugin->managed_peer_cfgs->create_enumerator(plugin->managed_peer_cfgs);
     while (enumerator->enumerate(enumerator, &peer_cfg)) {
         if (streq(peer_cfg->get_name(peer_cfg), peer_name)) {
             // peer_cfg를 charon에 재적용 (controller 등 내부 API 사용)
             if (charon->controller && charon->controller->initiate) {
-                // Find the first child_cfg for this peer_cfg
+                // Process ALL child_cfg for this peer_cfg
                 enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
                 child_cfg_t *child_cfg = NULL;
-                if (child_enum->enumerate(child_enum, &child_cfg)) {
+                while (child_enum->enumerate(child_enum, &child_cfg)) {
+                    total_children++;
                     status_t status = charon->controller->initiate(
                         charon->controller, peer_cfg, child_cfg, NULL, NULL, LEVEL_CTRL, 0, FALSE);
-                    result = (status == SUCCESS);
-                    DBG1(DBG_CFG, "apply_segw_config: re-initiated connection for %s (status=%d)", peer_name, status);
+                    if (status == SUCCESS) {
+                        initiated_children++;
+                        DBG1(DBG_CFG, "apply_segw_config: successfully re-initiated child '%s' for peer %s", 
+                             child_cfg->get_name(child_cfg), peer_name);
+                    } else {
+                        DBG1(DBG_CFG, "apply_segw_config: failed to re-initiate child '%s' for peer %s (status=%d)", 
+                             child_cfg->get_name(child_cfg), peer_name, status);
+                    }
                 }
                 child_enum->destroy(child_enum);
+                result = (initiated_children > 0); // At least one child successfully initiated
+                DBG1(DBG_CFG, "apply_segw_config: initiated %d/%d children for peer %s", 
+                     initiated_children, total_children, peer_name);
             } else {
                 DBG1(DBG_CFG, "apply_segw_config: controller or initiate not available");
             }
@@ -1279,8 +1304,11 @@ static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer
     }
     enumerator->destroy(enumerator);
     plugin->peer_cfgs_mutex->unlock(plugin->peer_cfgs_mutex);
-    if (!result) {
-        DBG1(DBG_CFG, "apply_segw_config: failed to reload peer config for %s", peer_name);
+    
+    if (total_children == 0) {
+        DBG1(DBG_CFG, "apply_segw_config: no child configs found for peer %s", peer_name);
+    } else if (!result) {
+        DBG1(DBG_CFG, "apply_segw_config: failed to reload any child config for peer %s", peer_name);
     }
     return result;
 }
