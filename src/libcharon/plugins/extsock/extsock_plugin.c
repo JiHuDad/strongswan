@@ -96,7 +96,6 @@ static linked_list_t* parse_ts_from_json_array(cJSON *json_array);
 static char* json_array_to_comma_separated_string(cJSON *json_array);
 static action_t string_to_action(const char* action_str);
 static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer_name);
-static void free_segw_backup_copy(segw_backup_info_t *backup);
 // --- SEGW 백업 함수 전방 선언 종료 ---
 
 // 플러그인 내부 데이터 구조체 정의입니다.
@@ -309,20 +308,11 @@ static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJ
         if (streq(auth_type_str, "psk")) { // PSK 인증
             auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK); // PSK 클래스 설정
             identification_t *psk_identity = NULL;
-            identification_t *auth_identity = NULL;
-            
             if (j_id && cJSON_IsString(j_id)) { // ID가 지정된 경우
                  psk_identity = identification_create_from_string(j_id->valuestring);
-                 if (psk_identity) {
-                     auth_identity = psk_identity->clone(psk_identity); // auth_cfg용 복제본
-                     auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, auth_identity); // ID 설정 (복제본 사용)
-                 }
+                 auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, psk_identity->clone(psk_identity)); // ID 설정 (복제본 사용)
             } else { // ID 없으면 "%any"
                 psk_identity = identification_create_from_string("%any");
-                if (psk_identity) {
-                    auth_identity = psk_identity->clone(psk_identity); // auth_cfg용 복제본  
-                    auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, auth_identity); // ID 설정
-                }
             }
 
             if (psk_identity) { // ID 객체 생성 성공 시
@@ -333,7 +323,6 @@ static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJ
                     if (psk_key) {
                         // 플러그인의 자격증명 세트에 공유키 추가 (psk_key, psk_identity 소유권 이전)
                         plugin->creds->add_shared(plugin->creds, psk_key, psk_identity, NULL);
-                        // psk_identity는 creds가 소유권을 가져감, 여기서 해제하지 않음
                     } else {
                         DBG1(DBG_LIB, "Failed to create PSK key for ID: %s", j_id ? j_id->valuestring : "%any");
                         psk_identity->destroy(psk_identity); // 키 생성 실패 시 ID 객체 해제
@@ -725,12 +714,12 @@ static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t 
                     switch_to_second_segw(plugin, backup->peer_name); // 2nd SEGW로 전환
                     apply_segw_config(plugin, backup->peer_name); // strongSwan에 재적용
                 }
-                free_segw_backup_copy(backup); // 복사본 해제
             }
         }
     }
 
     // SAD/SPD 정보 수집 및 이벤트 전송
+    char event_json[1024]; // 이벤트 JSON 문자열 버퍼
     char local_ts[256] = "", remote_ts[256] = ""; // 로컬/원격 트래픽 셀렉터 문자열 버퍼
     traffic_selector_t *local = NULL, *remote = NULL; // 트래픽 셀렉터 포인터
     enumerator_t *enumerator; // 열거자 포인터
@@ -782,42 +771,28 @@ static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t 
 
     // SPI (outbound 기준)
     uint32_t spi = child_sa->get_spi(child_sa, FALSE); // 아웃바운드 SPI 추출
-    
-    // 이름들을 안전하게 제한
-    const char *ike_sa_name = ike_sa->get_name(ike_sa);
-    const char *child_sa_name = child_sa->get_name(child_sa);
-    if (!ike_sa_name) ike_sa_name = "unknown";
-    if (!child_sa_name) child_sa_name = "unknown";
 
-    // JSON 생성 (동적 할당으로 안전하게)
-    size_t json_size = 2048 + strlen(ike_sa_name) + strlen(child_sa_name) + 
-                       strlen(local_ts) + strlen(remote_ts) + strlen(src) + strlen(dst);
-    char *event_json = malloc(json_size);
-    if (!event_json) {
-        DBG1(DBG_LIB, "Failed to allocate memory for event JSON");
-        return TRUE;
-    }
-    
-    int written = snprintf(event_json, json_size,
+    // JSON 생성 및 전송
+    snprintf(event_json, sizeof(event_json),
         "{"
-        "\"event\": \"%.64s\"," 
-        "\"ike_sa_name\": \"%.128s\"," 
-        "\"child_sa_name\": \"%.128s\"," 
+        "\"event\": \"%s\"," 
+        "\"ike_sa_name\": \"%s\"," 
+        "\"child_sa_name\": \"%s\"," 
         "\"spi\": %u," 
         "\"proto\": \"%N\"," 
         "\"mode\": \"%N\"," 
-        "\"enc_alg\": \"%.32s\"," 
-        "\"integ_alg\": \"%.32s\"," 
-        "\"src\": \"%.64s\"," 
-        "\"dst\": \"%.64s\"," 
-        "\"local_ts\": \"%.256s\"," 
-        "\"remote_ts\": \"%.256s\"," 
-        "\"direction\": \"%.16s\"," 
-        "\"policy_action\": \"%.16s\""
+        "\"enc_alg\": \"%s\"," 
+        "\"integ_alg\": \"%s\"," 
+        "\"src\": \"%s\"," 
+        "\"dst\": \"%s\"," 
+        "\"local_ts\": \"%s\"," 
+        "\"remote_ts\": \"%s\"," 
+        "\"direction\": \"%s\"," 
+        "\"policy_action\": \"%s\""
         "}",
         event_name,
-        ike_sa_name, // IKE_SA 이름
-        child_sa_name, // CHILD_SA 이름
+        ike_sa->get_name(ike_sa), // IKE_SA 이름
+        child_sa->get_name(child_sa), // CHILD_SA 이름
         spi, // SPI 값
         protocol_id_names, proto, // 프로토콜 이름
         ipsec_mode_names, mode, // 모드 이름
@@ -830,14 +805,7 @@ static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t 
         direction, // 방향
         policy_action // 정책 액션
     );
-    
-    if (written > 0 && written < (int)json_size) {
-        send_event_to_external(event_json); // 외부 프로그램으로 이벤트 전송
-    } else {
-        DBG1(DBG_LIB, "JSON event too large, truncated or failed");
-    }
-    
-    free(event_json); // 동적 할당된 메모리 해제
+    send_event_to_external(event_json); // 외부 프로그램으로 이벤트 전송
     return TRUE; // 이벤트 처리 성공
 }
 
@@ -934,7 +902,6 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
     if (!current_cfg) // IKE 설정 획득 실패
     {
         DBG1(DBG_CFG, "Failed to get current IKE config"); // 에러 로그 출력
-        free_segw_backup_copy(backup_info); // 백업 정보 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -945,7 +912,6 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
     if (!my_addr || !target_segw_addr) { // NULL 체크
         DBG1(DBG_CFG, "Local address (%s) or target SEGW address (%s) is NULL", 
              my_addr ? my_addr : "NULL", target_segw_addr ? target_segw_addr : "NULL");
-        free_segw_backup_copy(backup_info); // 백업 정보 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -970,7 +936,6 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
         DBG1(DBG_CFG, "Failed to create new IKE config"); // 에러 로그 출력
         free(ike_create_cfg.local); // 동적 할당된 로컬 주소 해제
         free(ike_create_cfg.remote); // 동적 할당된 원격 주소 해제
-        free_segw_backup_copy(backup_info); // 백업 정보 복사본 해제
         return FALSE; // 실패 반환
     }
     
@@ -1003,7 +968,6 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
     success = TRUE; // 성공 플래그 설정
 
     new_cfg->destroy(new_cfg); // 새 설정 객체 해제
-    free_segw_backup_copy(backup_info); // 백업 정보 복사본 해제
     return success; // 성공 여부 반환
 }
 
@@ -1015,7 +979,6 @@ static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *pe
     segw_backup_info_t *backup = find_segw_backup(this, peer_name); // 백업 정보 검색
     if (!backup || !backup->second_segw_addr) { // 백업 정보 또는 2nd SEGW 주소 없음
         DBG1(DBG_CFG, "No backup SEGW found for peer %s", peer_name); // 에러 로그
-        free_segw_backup_copy(backup); // 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -1023,7 +986,6 @@ static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *pe
         charon->ike_sa_manager, (char*)peer_name, ID_MATCH_PERFECT);
     if (!ike_sa) { // IKE_SA 찾기 실패
         DBG1(DBG_CFG, "No IKE_SA found for peer %s", peer_name); // 에러 로그
-        free_segw_backup_copy(backup); // 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -1031,22 +993,10 @@ static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *pe
     charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa); // IKE_SA 체크인
 
     if (success) { // 전환 성공 시
-        // 원본 테이블의 is_active 상태를 업데이트해야 함
-        this->segw_hash_mutex->lock(this->segw_hash_mutex);
-        uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE;
-        segw_backup_info_t *orig_backup = this->segw_hash[hash];
-        while (orig_backup) {
-            if (orig_backup->peer_name && streq(orig_backup->peer_name, peer_name)) {
-                orig_backup->is_active = TRUE; // 2nd SEGW 활성 상태로 설정
-                break;
-            }
-            orig_backup = orig_backup->next;
-        }
-        this->segw_hash_mutex->unlock(this->segw_hash_mutex);
+        backup->is_active = TRUE; // 2nd SEGW 활성 상태로 설정
         DBG1(DBG_CFG, "Successfully switched to 2nd SEGW for peer %s", peer_name); // 성공 로그
     }
 
-    free_segw_backup_copy(backup); // 복사본 해제
     return success; // 성공 여부 반환
 }
 
@@ -1058,7 +1008,6 @@ static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *pee
     segw_backup_info_t *backup = find_segw_backup(this, peer_name); // 백업 정보 검색
     if (!backup || !backup->first_segw_addr) { // 백업 정보 또는 1st SEGW 주소 없음
         DBG1(DBG_CFG, "No primary SEGW found for peer %s", peer_name); // 에러 로그
-        free_segw_backup_copy(backup); // 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -1066,7 +1015,6 @@ static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *pee
         charon->ike_sa_manager, (char*)peer_name, ID_MATCH_PERFECT);
     if (!ike_sa) { // IKE_SA 찾기 실패
         DBG1(DBG_CFG, "No IKE_SA found for peer %s", peer_name); // 에러 로그
-        free_segw_backup_copy(backup); // 복사본 해제
         return FALSE; // 실패 반환
     }
 
@@ -1074,68 +1022,27 @@ static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *pee
     charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa); // IKE_SA 체크인
 
     if (success) { // 전환 성공 시
-        // 원본 테이블의 is_active 상태를 업데이트해야 함
-        this->segw_hash_mutex->lock(this->segw_hash_mutex);
-        uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE;
-        segw_backup_info_t *orig_backup = this->segw_hash[hash];
-        while (orig_backup) {
-            if (orig_backup->peer_name && streq(orig_backup->peer_name, peer_name)) {
-                orig_backup->is_active = FALSE; // 1st SEGW 활성 상태로 설정
-                break;
-            }
-            orig_backup = orig_backup->next;
-        }
-        this->segw_hash_mutex->unlock(this->segw_hash_mutex);
+        backup->is_active = FALSE; // 1st SEGW 활성 상태로 설정
         DBG1(DBG_CFG, "Successfully switched to 1st SEGW for peer %s", peer_name); // 성공 로그
     }
 
-    free_segw_backup_copy(backup); // 복사본 해제
     return success; // 성공 여부 반환
 }
 
-// 2nd SEGW 백업 정보 저장 (중복 체크 포함)
+// 2nd SEGW 백업 정보 저장 (개선된 버전)
 static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_name,
                             const char *first_segw, const char *second_segw)
 {
-    if (!peer_name || (!first_segw && !second_segw)) // 피어명 또는 1st, 2nd SEGW 주소 모두 없는 경우
+    if (!first_segw && !second_segw) // 1st, 2nd SEGW 주소 모두 없는 경우
     {
-        DBG1(DBG_CFG, "Invalid parameters for SEGW backup: peer=%s", peer_name ? peer_name : "NULL"); // 에러 로그
+        DBG1(DBG_CFG, "No SEGW addresses provided for peer %s", peer_name); // 에러 로그
         return; // 함수 종료
     }
 
-    uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE; // 피어명으로 해시값 계산
-
-    this->segw_hash_mutex->lock(this->segw_hash_mutex); // 해시 테이블 뮤텍스 잠금
-
-    // 기존 엔트리 검색 및 업데이트 시도
-    segw_backup_info_t *existing = this->segw_hash[hash];
-    while (existing) {
-        if (existing->peer_name && streq(existing->peer_name, peer_name)) {
-            // 기존 엔트리 발견 - 업데이트
-            char *old_first = existing->first_segw_addr;
-            char *old_second = existing->second_segw_addr;
-            
-            existing->first_segw_addr = first_segw ? strdup(first_segw) : NULL;
-            existing->second_segw_addr = second_segw ? strdup(second_segw) : NULL;
-            // is_active는 유지 (현재 상태 보존)
-            
-            // 이전 메모리 해제
-            free(old_first);
-            free(old_second);
-            
-            this->segw_hash_mutex->unlock(this->segw_hash_mutex);
-            DBG1(DBG_CFG, "Updated SEGW backup info for peer %s: first=%s, second=%s", 
-                 peer_name, first_segw ? first_segw : "none", second_segw ? second_segw : "none");
-            return;
-        }
-        existing = existing->next;
-    }
-
-    // 새 엔트리 생성
+    /* Create new backup info */
     segw_backup_info_t *backup = malloc(sizeof(segw_backup_info_t)); // 백업 정보 구조체 메모리 할당
     if (!backup) // 메모리 할당 실패
     {
-        this->segw_hash_mutex->unlock(this->segw_hash_mutex);
         DBG1(DBG_CFG, "Failed to allocate memory for backup info"); // 에러 로그
         return; // 함수 종료
     }
@@ -1144,57 +1051,40 @@ static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_n
     backup->first_segw_addr = first_segw ? strdup(first_segw) : NULL; // 1st SEGW 주소 복사 (있는 경우)
     backup->second_segw_addr = second_segw ? strdup(second_segw) : NULL; // 2nd SEGW 주소 복사 (있는 경우)
     backup->is_active = FALSE; // 초기 상태는 1st SEGW 활성
+    backup->next = NULL; // 연결 리스트 다음 포인터 초기화
+
+    /* Calculate hash based on peer_name */
+    uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE; // 피어명으로 해시값 계산
+
+    /* Store in hash table */
+    this->segw_hash_mutex->lock(this->segw_hash_mutex); // 해시 테이블 뮤텍스 잠금
     backup->next = this->segw_hash[hash]; // 현재 해시 슬롯의 첫 노드를 다음으로 설정
     this->segw_hash[hash] = backup; // 새 백업 정보를 해시 슬롯의 첫 노드로 설정
-
     this->segw_hash_mutex->unlock(this->segw_hash_mutex); // 뮤텍스 잠금 해제
 
-    DBG1(DBG_CFG, "Stored new SEGW backup info for peer %s: first=%s, second=%s", // 저장 완료 로그
+    DBG1(DBG_CFG, "Stored SEGW backup info for peer %s: first=%s, second=%s", // 저장 완료 로그
          peer_name, first_segw ? first_segw : "none", second_segw ? second_segw : "none");
 }
 
-// 2nd SEGW 백업 정보를 찾아서 복사본을 반환합니다. (스레드 안전)
+// 2nd SEGW 백업 정보를 찾습니다.
 static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *peer_name)
 {
-    if (!peer_name) return NULL;
-    
     uint32_t hash = hash_peer_name(peer_name) % SEGW_HASH_SIZE; // 피어명으로 해시값 계산
-    segw_backup_info_t *found_backup = NULL; // 찾은 백업 정보 포인터
-    segw_backup_info_t *result = NULL; // 반환할 복사본
+    segw_backup_info_t *backup = NULL; // 백업 정보 포인터 초기화
 
     this->segw_hash_mutex->lock(this->segw_hash_mutex); // 해시 테이블 뮤텍스 잠금
-    found_backup = this->segw_hash[hash]; // 해당 해시 슬롯의 첫 노드 획득
-    while (found_backup) // 연결 리스트 순회
+    backup = this->segw_hash[hash]; // 해당 해시 슬롯의 첫 노드 획득
+    while (backup) // 연결 리스트 순회
     {
-        if (found_backup->peer_name && streq(found_backup->peer_name, peer_name)) // 피어명이 일치하는지 확인
+        if (backup->peer_name && streq(backup->peer_name, peer_name)) // 피어명이 일치하는지 확인 (NULL 체크 추가)
         {
-            // 찾은 정보의 복사본 생성 (뮤텍스 안에서)
-            result = malloc(sizeof(segw_backup_info_t));
-            if (result) {
-                result->peer_name = found_backup->peer_name ? strdup(found_backup->peer_name) : NULL;
-                result->first_segw_addr = found_backup->first_segw_addr ? strdup(found_backup->first_segw_addr) : NULL;
-                result->second_segw_addr = found_backup->second_segw_addr ? strdup(found_backup->second_segw_addr) : NULL;
-                result->is_active = found_backup->is_active;
-                result->next = NULL; // 복사본은 연결 리스트에 포함되지 않음
-            }
             break; // 일치하면 루프 탈출
         }
-        found_backup = found_backup->next; // 다음 노드로 이동
+        backup = backup->next; // 다음 노드로 이동
     }
     this->segw_hash_mutex->unlock(this->segw_hash_mutex); // 뮤텍스 잠금 해제
 
-    return result; // 복사본 반환 (없으면 NULL)
-}
-
-// 복사본으로 생성된 segw_backup_info_t를 해제하는 함수
-static void free_segw_backup_copy(segw_backup_info_t *backup)
-{
-    if (!backup) return;
-    
-    free(backup->peer_name);
-    free(backup->first_segw_addr);
-    free(backup->second_segw_addr);
-    free(backup);
+    return backup; // 찾은 백업 정보 반환 (없으면 NULL)
 }
 
 // 플러그인 이름 반환 함수입니다.
