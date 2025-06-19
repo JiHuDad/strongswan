@@ -326,13 +326,9 @@ static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJ
                 } else {
                     DBG1(DBG_LIB, "PSK auth specified but 'secret' missing or not a string for ID: %s", j_id ? j_id->valuestring : "%any");
                     psk_identity->destroy(psk_identity); // 시크릿 누락 시 ID 객체 해제
-                    auth_cfg->destroy(auth_cfg); // 시크릿 누락 시 auth_cfg 객체도 해제
-                    return NULL; // 실패 반환
                 }
             } else {
                  DBG1(DBG_LIB, "Failed to create PSK identity for PSK auth.");
-                 auth_cfg->destroy(auth_cfg); // PSK identity 생성 실패 시 auth_cfg 객체 해제
-                 return NULL; // 실패 반환
             }
         } else if (streq(auth_type_str, "pubkey")) { // 공개키 인증
             auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY); // 공개키 클래스 설정
@@ -873,22 +869,12 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
         return FALSE; // 실패 반환
     }
 
-    /* Get target addresses and check for NULL */
-    char *my_addr = current_cfg->get_my_addr(current_cfg); // 로컬 주소 가져오기
-    char *target_segw_addr = to_second_segw ? backup_info->second_segw_addr : backup_info->first_segw_addr; // 대상 SEGW 주소
-    
-    if (!my_addr || !target_segw_addr) { // NULL 체크
-        DBG1(DBG_CFG, "Local address (%s) or target SEGW address (%s) is NULL", 
-             my_addr ? my_addr : "NULL", target_segw_addr ? target_segw_addr : "NULL");
-        return FALSE; // 실패 반환
-    }
-
     /* Create new IKE config with current settings */
     ike_cfg_create_t ike_create_cfg = { // 새 IKE 설정 생성용 구조체 초기화
         .version = current_cfg->get_version(current_cfg), // 현재 IKE 버전 복사
-        .local = strdup(my_addr), // 현재 실제 로컬 주소 복사 (NULL 체크 완료)
+        .local = strdup(current_cfg->get_my_addr(current_cfg)), // 현재 실제 로컬 주소 복사
         .local_port = current_cfg->get_my_port(current_cfg), // 로컬 포트 복사
-        .remote = strdup(target_segw_addr), // 전환 대상 SEGW 주소 복사 (NULL 체크 완료)
+        .remote = strdup(to_second_segw ? backup_info->second_segw_addr : backup_info->first_segw_addr), // 전환 대상 SEGW 주소 복사
         .remote_port = current_cfg->get_other_port(current_cfg), // 원격 포트 복사
         .no_certreq = !current_cfg->send_certreq(current_cfg), // 인증서 요청 설정 복사
         .ocsp_certreq = current_cfg->send_ocsp_certreq(current_cfg), // OCSP 요청 설정 복사
@@ -902,14 +888,8 @@ static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool t
     if (!new_cfg) // 생성 실패 시
     {
         DBG1(DBG_CFG, "Failed to create new IKE config"); // 에러 로그 출력
-        free(ike_create_cfg.local); // 동적 할당된 로컬 주소 해제
-        free(ike_create_cfg.remote); // 동적 할당된 원격 주소 해제
         return FALSE; // 실패 반환
     }
-    
-    /* Clean up dynamically allocated strings */
-    free(ike_create_cfg.local); // ike_cfg_create가 복사본을 만들므로 원본 해제
-    free(ike_create_cfg.remote); // ike_cfg_create가 복사본을 만들므로 원본 해제
 
     /* Copy proposals from old config */
     linked_list_t *proposals = current_cfg->get_proposals(current_cfg); // 현재 제안 목록 획득
