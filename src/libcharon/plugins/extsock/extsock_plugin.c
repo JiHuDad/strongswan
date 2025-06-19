@@ -15,13 +15,6 @@
 #include <string.h>      // 문자열 처리
 #include <errno.h>       // 에러 번호
 #include <utils/debug.h> // 디버깅 유틸리티
-#include <sys/types.h>   // u_char 타입 정의를 위한 헤더
-#include <stdint.h>      // uint8_t 타입 정의를 위한 헤더
-
-// u_char 타입이 정의되지 않은 경우를 위한 대체 정의
-#ifndef u_char
-typedef uint8_t u_char;
-#endif
 
 // IPsec 설정 및 관리 관련 헤더 파일들입니다.
 #include <config/ike_cfg.h>       // IKE 설정
@@ -46,55 +39,17 @@ typedef uint8_t u_char;
 #include <utils/utils/string.h>      // 문자열 유틸리티
 #include <collections/linked_list.h> // 연결 리스트
 #include <utils/enum.h>
-#include <crypto/crypters/crypter.h> // encryption_algorithm_names
-#include <crypto/signers/signer.h>   // integrity_algorithm_names
-#include <crypto/proposal/proposal.h> // protocol_id_names
-#include <ipsec/ipsec_types.h>        // ipsec_mode_names, policy_dir_names
-#include <config/child_cfg.h>         // action_names
 
 // 유닉스 도메인 소켓 파일 경로입니다.
 #define SOCKET_PATH "/tmp/strongswan_extsock.sock"
 
-// 플러그인 내부 데이터 구조체 전방 선언
+// 플러그인 내부 데이터 구조체 전방 선언입니다.
 typedef struct private_extsock_plugin_t private_extsock_plugin_t;
 
-// 해시 테이블 크기 (소수 사용)
-#define SEGW_HASH_SIZE 1021
-
-// 2nd SEGW 백업 정보 구조체
-typedef struct segw_backup_info_t {
-    char *peer_name;           // 피어 설정 이름
-    char *second_segw_addr;    // 2nd SEGW 주소
-    char *first_segw_addr;     // 1st SEGW 주소
-    char *local_addr;          // 로컬 주소
-    bool is_active;            // 현재 2nd SEGW가 활성화되어 있는지 여부
-    struct segw_backup_info_t *next; // 해시 체이닝을 위한 포인터
-} segw_backup_info_t;
-
 // 정적 함수 전방 선언입니다.
-// --- SEGW 백업 관련 함수 전방 선언 ---
-static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool to_second_segw);
-static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *addr);
-static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_name, const char *first_segw, const char *second_segw);
-static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *peer_name);
-static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *peer_name);
-static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up);
-static void* socket_thread(private_extsock_plugin_t *this);
-static void handle_external_command(private_extsock_plugin_t *this, char *cmd);
-static bool apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json);
-static void extsock_plugin_destroy(private_extsock_plugin_t *this);
-static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen);
-static void send_event_to_external(const char *event_json);
-static uint32_t hash_peer_name(const char *peer_name);
-static ike_cfg_t* parse_ike_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *ike_json);
-static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *auth_json, bool is_local);
-static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array);
-static linked_list_t* parse_proposals_from_json_array(cJSON *json_array, protocol_id_t proto, bool is_ike);
-static linked_list_t* parse_ts_from_json_array(cJSON *json_array);
-static char* json_array_to_comma_separated_string(cJSON *json_array);
-static action_t string_to_action(const char* action_str);
-static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer_name);
-// --- SEGW 백업 함수 전방 선언 종료 ---
+static void extsock_plugin_destroy(private_extsock_plugin_t *this); // 플러그인 소멸자
+static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen); // TS -> 문자열 변환
+static void send_event_to_external(const char *event_json); // 외부로 이벤트 전송
 
 // 플러그인 내부 데이터 구조체 정의입니다.
 struct private_extsock_plugin_t {
@@ -105,9 +60,17 @@ struct private_extsock_plugin_t {
     bool running;                   // 스레드 실행 상태 플래그
     linked_list_t *managed_peer_cfgs; // 관리되는 피어 설정 목록
     mutex_t *peer_cfgs_mutex;         // 피어 설정 목록 접근 뮤텍스
-    segw_backup_info_t *segw_hash[SEGW_HASH_SIZE]; // 2nd SEGW 백업 해시 테이블
-    mutex_t *segw_hash_mutex;          // 해시 테이블 접근 뮤텍스
 };
+
+// --- JSON 파싱 헬퍼 함수 전방 선언 ---
+static ike_cfg_t* parse_ike_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *ike_json);            // IKE 설정 파싱
+static auth_cfg_t* parse_auth_cfg_from_json(private_extsock_plugin_t *plugin, cJSON *auth_json, bool is_local); // 인증 설정 파싱
+static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array); // 자식 SA 설정 파싱 및 추가
+static linked_list_t* parse_proposals_from_json_array(cJSON *json_array, protocol_id_t proto, bool is_ike); // 제안 목록 파싱
+static linked_list_t* parse_ts_from_json_array(cJSON *json_array);                                       // 트래픽 셀렉터 목록 파싱
+static char* json_array_to_comma_separated_string(cJSON *json_array);                                     // JSON 배열 -> 쉼표 구분 문자열
+static action_t string_to_action(const char* action_str);                                                 // 문자열 -> action_t 변환
+// --- 헬퍼 함수 전방 선언 종료 ---
 
 // 지정된 IKE_SA에 대해 DPD(Dead Peer Detection)를 시작합니다.
 static void start_dpd(const char *ike_sa_name)
@@ -363,8 +326,7 @@ static action_t string_to_action(const char* action_str) {
 }
 
 // JSON 배열로부터 자식 SA(CHILD_SA) 설정들을 파싱하여 peer_cfg에 추가합니다.
-static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array)
-{
+static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t *peer_cfg, cJSON *children_json_array) {
     if (!children_json_array || !cJSON_IsArray(children_json_array)) { // 자식 SA 설정이 없거나 배열이 아니면 성공 처리
         return TRUE;
     }
@@ -446,129 +408,108 @@ static bool add_children_from_json(private_extsock_plugin_t *plugin, peer_cfg_t 
 }
 
 // 수신된 JSON 형식의 IPsec 설정을 적용합니다.
-static bool apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json)
+static void apply_ipsec_config(private_extsock_plugin_t *this, const char *config_json)
 {
-    DBG1(DBG_LIB, "apply_ipsec_config: received config: %s", config_json);
-    cJSON *root = cJSON_Parse(config_json);
-    if (!root)
-    {
-        DBG1(DBG_CFG, "Failed to parse JSON config: %s", cJSON_GetErrorPtr());
-        return FALSE;
+    DBG1(DBG_LIB, "apply_ipsec_config: received config: %s", config_json); // 수신된 설정 로그
+    cJSON *root = cJSON_Parse(config_json); // JSON 파싱
+    if (!root) { // 파싱 실패
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse JSON: %s", cJSON_GetErrorPtr());
+        return;
     }
 
-    /* Parse peer configs */
-    cJSON *peers = cJSON_GetObjectItem(root, "peers");
-    if (!peers || !cJSON_IsArray(peers))
-    {
-        DBG1(DBG_CFG, "No peers array in config");
+    // 연결 이름 파싱
+    cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
+    if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Missing connection 'name' in JSON");
         cJSON_Delete(root);
-        return FALSE;
+        return;
+    }
+    const char *conn_name_str = j_conn_name->valuestring;
+
+    // IKE 설정 파싱
+    cJSON *j_ike_cfg = cJSON_GetObjectItem(root, "ike_cfg");
+    ike_cfg_t *ike_cfg = parse_ike_cfg_from_json(this, j_ike_cfg);
+    if (!ike_cfg) { // IKE 설정 파싱 실패
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse ike_cfg section for %s", conn_name_str);
+        cJSON_Delete(root);
+        return;
     }
 
-    cJSON *peer;
-    cJSON_ArrayForEach(peer, peers)
-    {
-        /* Get peer name */
-        cJSON *name = cJSON_GetObjectItem(peer, "name");
-        if (!name || !cJSON_IsString(name))
-        {
-            DBG1(DBG_CFG, "Peer name missing or invalid");
-            continue;
-        }
-        const char *conn_name_str = name->valuestring;
-
-        /* Get IKE config */
-        cJSON *ike = cJSON_GetObjectItem(peer, "ike");
-        if (!ike)
-        {
-            DBG1(DBG_CFG, "IKE config missing for peer %s", name->valuestring);
-            continue;
-        }
-
-        /* Parse IKE config */
-        ike_cfg_t *ike_cfg = parse_ike_cfg_from_json(this, ike);
-        if (!ike_cfg)
-        {
-            DBG1(DBG_CFG, "Failed to parse IKE config for peer %s", name->valuestring);
-            continue;
-        }
-
-        /* Parse authentication configs */
-        cJSON *local_auth = cJSON_GetObjectItem(peer, "local_auth");
-        cJSON *remote_auth = cJSON_GetObjectItem(peer, "remote_auth");
-        auth_cfg_t *local_auth_cfg = parse_auth_cfg_from_json(this, local_auth, TRUE);
-        auth_cfg_t *remote_auth_cfg = parse_auth_cfg_from_json(this, remote_auth, FALSE);
-
-        /* Create peer config */
-        peer_cfg_create_t peer_create_cfg = {0};
-        peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
-        if (!peer_cfg)
-        {
-            DBG1(DBG_CFG, "Failed to create peer config for %s", name->valuestring);
-            ike_cfg->destroy(ike_cfg);
-            if (local_auth_cfg) local_auth_cfg->destroy(local_auth_cfg);
-            if (remote_auth_cfg) remote_auth_cfg->destroy(remote_auth_cfg);
-            continue;
-        }
-
-        /* Add remote auth config if present */
-        if (remote_auth_cfg)
-        {
-            peer_cfg->add_auth_cfg(peer_cfg, remote_auth_cfg, FALSE);
-        }
-
-        /* Parse and add child configs */
-        cJSON *children = cJSON_GetObjectItem(peer, "children");
-        if (!add_children_from_json(this, peer_cfg, children))
-        {
-            DBG1(DBG_CFG, "Failed to add child configs for peer %s", name->valuestring);
-            peer_cfg->destroy(peer_cfg);
-            continue;
-        }
-
-        /* Get SEGW addresses for backup */
-        char *first_segw = NULL;
-        char *second_segw = NULL;
-        cJSON *remote_addrs = cJSON_GetObjectItem(ike, "remote_addrs");
-        if (remote_addrs && cJSON_IsArray(remote_addrs) && cJSON_GetArraySize(remote_addrs) > 0)
-        {
-            cJSON *addr = cJSON_GetArrayItem(remote_addrs, 0);
-            if (addr && cJSON_IsString(addr))
-            {
-                first_segw = addr->valuestring;
-            }
-        }
-        cJSON *second_segw_json = cJSON_GetObjectItem(peer, "second_segw");
-        if (second_segw_json && cJSON_IsString(second_segw_json))
-        {
-            second_segw = second_segw_json->valuestring;
-        }
-
-        /* Store SEGW backup info */
-        if (first_segw || second_segw)
-        {
-            store_segw_backup(this, name->valuestring, first_segw, second_segw);
-        }
-
-        /* Add to managed list */
-        this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
-        this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
-        this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
-
-        // 실제 strongSwan charon에 적용
-        if (charon->controller && charon->controller->initiate) {
-            enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
-            child_cfg_t *child_cfg = NULL;
-            if (child_enum->enumerate(child_enum, &child_cfg)) {
-                charon->controller->initiate(
-                    charon->controller, peer_cfg, child_cfg, NULL, NULL, LEVEL_CTRL, 0, FALSE);
-            }
-            child_enum->destroy(child_enum);
-        }
+    peer_cfg_create_t peer_create_cfg = {0}; // 피어 설정 생성용 구조체
+    // TODO: 필요시 JSON에서 DPD, 재키 설정 등 추가 피어 설정 파싱
+    
+    // 피어 설정(peer_cfg_t) 객체 생성
+    peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
+    if (!peer_cfg) { // 피어 설정 생성 실패
+        DBG1(DBG_LIB, "apply_ipsec_config: Failed to create peer_cfg for %s", conn_name_str);
+        ike_cfg->destroy(ike_cfg); // 생성된 IKE 설정 해제
+        cJSON_Delete(root);
+        return;
     }
 
-    cJSON_Delete(root);
-    return TRUE;
+    // 로컬 인증 설정 파싱 및 추가 (없으면 기본값 사용)
+    cJSON *j_local_auth = cJSON_GetObjectItem(root, "local_auth");
+    if (j_local_auth) {
+        auth_cfg_t *local_auth_cfg = parse_auth_cfg_from_json(this, j_local_auth, TRUE);
+        if (local_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, local_auth_cfg, TRUE); // TRUE는 로컬 인증
+        } else {
+            DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse local_auth for %s", conn_name_str);
+        }
+    } else { // 기본 로컬 인증 (any)
+        auth_cfg_t *default_local_auth = auth_cfg_create();
+        default_local_auth->add(default_local_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_local_auth, TRUE);
+    }
+
+    // 원격 인증 설정 파싱 및 추가 (없으면 기본값 사용)
+    cJSON *j_remote_auth = cJSON_GetObjectItem(root, "remote_auth");
+    if (j_remote_auth) {
+        auth_cfg_t *remote_auth_cfg = parse_auth_cfg_from_json(this, j_remote_auth, FALSE);
+        if (remote_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, remote_auth_cfg, FALSE); // FALSE는 원격 인증
+        } else {
+            DBG1(DBG_LIB, "apply_ipsec_config: Failed to parse remote_auth for %s", conn_name_str);
+        }
+    } else { // 기본 원격 인증 (any)
+        auth_cfg_t *default_remote_auth = auth_cfg_create();
+        default_remote_auth->add(default_remote_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_remote_auth, FALSE);
+    }
+
+    // 자식 SA 설정 파싱 및 추가
+    cJSON *j_children = cJSON_GetObjectItem(root, "children");
+    if (!add_children_from_json(this, peer_cfg, j_children)) {
+        DBG1(DBG_LIB, "apply_ipsec_config: Error processing children for %s", conn_name_str);
+        // 치명적 오류 시 정리 로직 고려
+    }
+
+    DBG1(DBG_LIB, "Successfully parsed peer_cfg '%s' from JSON.", peer_cfg->get_name(peer_cfg));
+
+    // 뮤텍스 잠금 후 관리 목록에 피어 설정 추가
+    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg); // 피어 설정 저장
+    DBG1(DBG_LIB, "Stored peer_cfg '%s' in managed list.", peer_cfg->get_name(peer_cfg));
+
+    // "start_action"이 ACTION_START인 자식 SA에 대해 SA 개시
+    enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
+    child_cfg_t *current_child;
+    if (child_enum) {
+        while (child_enum->enumerate(child_enum, &current_child)) { // 각 자식 SA 순회
+            if (current_child->get_start_action(current_child) == ACTION_START) { // 시작 액션 확인
+                DBG1(DBG_LIB, "Initiating CHILD_SA '%s' for peer '%s'",
+                     current_child->get_name(current_child), peer_cfg->get_name(peer_cfg));
+                // SA 개시 요청
+                charon->controller->initiate(charon->controller,
+                                             peer_cfg, current_child,
+                                             NULL, NULL, 0, 0, FALSE);
+            }
+        }
+        child_enum->destroy(child_enum); // 열거자 해제
+    }
+    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex); // 뮤텍스 해제
+
+    cJSON_Delete(root); // JSON 객체 트리 해제
 }
 
 // 외부 프로그램으로부터 수신된 명령을 처리합니다.
@@ -651,403 +592,116 @@ static void* socket_thread(private_extsock_plugin_t *this)
     return NULL; // 스레드 종료
 }
 
-// CHILD_SA UP/DOWN 이벤트 리스너 함수입니다.
-// 터널 상태 변경 시 외부로 JSON 이벤트를 전송합니다.
-static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up)
-{
-    private_extsock_plugin_t *plugin = (private_extsock_plugin_t*)this;
-    if (!up)
-    {
-        peer_cfg_t *peer_cfg = ike_sa->get_peer_cfg(ike_sa);
-        if (peer_cfg)
-        {
-            ike_cfg_t *ike_cfg = peer_cfg->get_ike_cfg(peer_cfg);
-            if (ike_cfg)
-            {
-                char *remote_addr = ike_cfg->get_other_addr(ike_cfg);
-                if (remote_addr)
-                {
-                    segw_backup_info_t *backup = find_segw_backup(plugin, remote_addr);
-                    if (backup && backup->is_active)
-                    {
-                        /* Switch back to first SEGW */
-                        switch_to_first_segw(plugin, backup->peer_name);
-                        // 2nd segw를 1st segw로 변경 후, 다시 설정을 내림
-                        apply_segw_config(plugin, backup->peer_name);
-                    }
-                    else if (backup && !backup->is_active)
-                    {
-                        switch_to_second_segw(plugin, backup->peer_name);
-                        apply_segw_config(plugin, backup->peer_name);
-                    }
-                    free(remote_addr);
-                }
-            }
-        }
-    }
-
-    // SAD/SPD 정보 수집 및 이벤트 전송
-    char event_json[1024];
-    char local_ts[256] = "", remote_ts[256] = "";
-    traffic_selector_t *local = NULL, *remote = NULL;
-    enumerator_t *enumerator;
-
-    enumerator = child_sa->create_ts_enumerator(child_sa, TRUE);
-    if (enumerator->enumerate(enumerator, &local))
-    {
-        ts_to_string(local, local_ts, sizeof(local_ts));
-    }
-    enumerator->destroy(enumerator);
-
-    enumerator = child_sa->create_ts_enumerator(child_sa, FALSE);
-    if (enumerator->enumerate(enumerator, &remote))
-    {
-        ts_to_string(remote, remote_ts, sizeof(remote_ts));
-    }
-    enumerator->destroy(enumerator);
-
-    // 프로토콜, 모드, 알고리즘 등 문자열 변환
-    protocol_id_t proto = child_sa->get_protocol(child_sa);
-    ipsec_mode_t mode = child_sa->get_mode(child_sa);
-    proposal_t *proposal = child_sa->get_proposal(child_sa);
-    char enc_alg[32] = "", integ_alg[32] = "";
-    if (proposal)
-    {
-        uint16_t enc_id, enc_len, integ_id, integ_len;
-        if (proposal->get_algorithm(proposal, ENCRYPTION_ALGORITHM, &enc_id, &enc_len) && enc_id != ENCR_UNDEFINED)
-        {
-            snprintf(enc_alg, sizeof(enc_alg), "%N", encryption_algorithm_names, enc_id);
-        }
-        if (proposal->get_algorithm(proposal, INTEGRITY_ALGORITHM, &integ_id, &integ_len) && integ_id != AUTH_UNDEFINED)
-        {
-            snprintf(integ_alg, sizeof(integ_alg), "%N", integrity_algorithm_names, integ_id);
-        }
-    }
-    // src, dst 주소
-    char src[64] = "", dst[64] = "";
-    host_t *src_host = ike_sa->get_my_host(ike_sa);
-    host_t *dst_host = ike_sa->get_other_host(ike_sa);
-    if (src_host) snprintf(src, sizeof(src), "%H", src_host);
-    if (dst_host) snprintf(dst, sizeof(dst), "%H", dst_host);
-
-    // direction, policy_action (보통 out/protect)
-    const char *direction = "out";
-    const char *policy_action = "protect";
-
-    // event 이름
-    const char *event_name = up ? "tunnel_up" : "tunnel_down";
-
-    // SPI (outbound 기준)
-    uint32_t spi = child_sa->get_spi(child_sa, FALSE);
-
-    // JSON 생성 및 전송
-    snprintf(event_json, sizeof(event_json),
-        "{"
-        "\"event\": \"%s\"," 
-        "\"ike_sa_name\": \"%s\"," 
-        "\"child_sa_name\": \"%s\"," 
-        "\"spi\": %u," 
-        "\"proto\": \"%N\"," 
-        "\"mode\": \"%N\"," 
-        "\"enc_alg\": \"%s\"," 
-        "\"integ_alg\": \"%s\"," 
-        "\"src\": \"%s\"," 
-        "\"dst\": \"%s\"," 
-        "\"local_ts\": \"%s\"," 
-        "\"remote_ts\": \"%s\"," 
-        "\"direction\": \"%s\"," 
-        "\"policy_action\": \"%s\""
-        "}",
-        event_name,
-        ike_sa->get_name(ike_sa),
-        child_sa->get_name(child_sa),
-        spi,
-        protocol_id_names, proto,
-        ipsec_mode_names, mode,
-        enc_alg,
-        integ_alg,
-        src,
-        dst,
-        local_ts,
-        remote_ts,
-        direction,
-        policy_action
-    );
-    send_event_to_external(event_json);
-    return TRUE;
-}
-
-// 외부 프로그램으로 JSON 형식의 이벤트를 전송합니다.
-static void send_event_to_external(const char *event_json)
-{
-    int sock;
-    struct sockaddr_un addr;
-
-    sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock < 0)
-    {
-        DBG1(DBG_CFG, "Failed to create socket for external event");
-        return;
-    }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-    {
-        DBG1(DBG_CFG, "Failed to connect to external socket");
-        close(sock);
-        return;
-    }
-
-    if (write(sock, event_json, strlen(event_json)) < 0)
-    {
-        DBG1(DBG_CFG, "Failed to send event to external socket");
-    }
-
-    close(sock);
-}
-
-// traffic_selector_t 객체를 문자열로 변환하여 버퍼에 저장합니다.
-// strongSwan의 %R 포맷 지정자를 사용합니다.
-static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
-{
-    if (ts && buf && buflen > 0) // 유효한 입력값인지 확인
-    {
-        snprintf(buf, buflen, "%R", ts); // %R은 strongSwan 내부 타입 포맷팅
-    }
-    else if (buf && buflen > 0) // TS가 NULL이어도 버퍼는 초기화
-    {
-        buf[0] = '\0'; // 빈 문자열로 설정
-    }
-}
-
-// 해시 함수
-static uint32_t hash_peer_name(const char *peer_name)
-{
-    uint32_t hash = 0;
-    while (*peer_name) {
-        hash = hash * 31 + *peer_name++;
-    }
-    return hash % SEGW_HASH_SIZE;
-}
-
-// SEGW 전환을 위한 공통 함수
-static bool switch_segw(private_extsock_plugin_t *this, ike_sa_t *ike_sa, bool to_second_segw)
-{
-    char *current_addr = NULL;
-    segw_backup_info_t *backup_info = NULL;
-    bool success = FALSE;
-
-    /* Get current remote address */
-    current_addr = ike_sa->get_ike_cfg(ike_sa)->get_other_addr(ike_sa->get_ike_cfg(ike_sa));
-    if (!current_addr)
-    {
-        DBG1(DBG_CFG, "Failed to get current remote address");
-        return FALSE;
-    }
-
-    /* Find backup info */
-    backup_info = find_segw_backup(this, current_addr);
-    if (!backup_info)
-    {
-        DBG1(DBG_CFG, "No backup info found for address %s", current_addr);
-        free(current_addr);
-        return FALSE;
-    }
-
-    /* Get current IKE config */
-    ike_cfg_t *current_cfg = ike_sa->get_ike_cfg(ike_sa);
-    if (!current_cfg)
-    {
-        DBG1(DBG_CFG, "Failed to get current IKE config");
-        free(current_addr);
-        return FALSE;
-    }
-
-    /* Create new IKE config with current settings */
-    ike_cfg_create_t ike_create_cfg = {
-        .version = current_cfg->get_version(current_cfg),
-        .local = strdup(backup_info->local_addr),
-        .local_port = current_cfg->get_my_port(current_cfg),
-        .remote = strdup(to_second_segw ? backup_info->second_segw_addr : backup_info->first_segw_addr),
-        .remote_port = current_cfg->get_other_port(current_cfg),
-        .no_certreq = !current_cfg->send_certreq(current_cfg),
-        .ocsp_certreq = current_cfg->send_ocsp_certreq(current_cfg),
-        .force_encap = current_cfg->force_encap(current_cfg),
-        .fragmentation = current_cfg->fragmentation(current_cfg),
-        .childless = current_cfg->childless(current_cfg),
-        .dscp = current_cfg->get_dscp(current_cfg)
-    };
-
-    ike_cfg_t *new_cfg = ike_cfg_create(&ike_create_cfg);
-    if (!new_cfg)
-    {
-        DBG1(DBG_CFG, "Failed to create new IKE config");
-        free(current_addr);
-        return FALSE;
-    }
-
-    /* Copy proposals from old config */
-    linked_list_t *proposals = current_cfg->get_proposals(current_cfg);
-    if (proposals)
-    {
-        enumerator_t *enumerator = proposals->create_enumerator(proposals);
-        proposal_t *proposal;
-        while (enumerator->enumerate(enumerator, &proposal))
-        {
-            proposal_t *clone = proposal->clone(proposal, PROPOSAL_PREFER_SUPPLIED);
-            if (clone)
-            {
-                new_cfg->add_proposal(new_cfg, clone);
-            }
-        }
-        enumerator->destroy(enumerator);
-        proposals->destroy(proposals);
-    }
-
-    /* Update IKE SA config */
-    ike_sa->set_ike_cfg(ike_sa, new_cfg);
-    DBG1(DBG_CFG, "Successfully switched to %s SEGW", 
-         to_second_segw ? "second" : "first");
-    success = TRUE;
-
-    new_cfg->destroy(new_cfg);
-    free(current_addr);
-    return success;
-}
-
-// 2nd SEGW로 전환
-static bool switch_to_second_segw(private_extsock_plugin_t *this, const char *peer_name)
-{
-    if (!peer_name) return FALSE;
-
-    segw_backup_info_t *backup = find_segw_backup(this, peer_name);
-    if (!backup || !backup->second_segw_addr) {
-        DBG1(DBG_CFG, "No backup SEGW found for peer %s", peer_name);
-        return FALSE;
-    }
-
-    ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
-        charon->ike_sa_manager, (char*)peer_name, ID_MATCH_PERFECT);
-    if (!ike_sa) {
-        DBG1(DBG_CFG, "No IKE_SA found for peer %s", peer_name);
-        return FALSE;
-    }
-
-    bool success = switch_segw(this, ike_sa, TRUE);
-    charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
-
-    if (success) {
-        backup->is_active = TRUE;
-        DBG1(DBG_CFG, "Successfully switched to 2nd SEGW for peer %s", peer_name);
-    }
-
-    return success;
-}
-
-// 1st SEGW로 전환
-static bool switch_to_first_segw(private_extsock_plugin_t *this, const char *peer_name)
-{
-    if (!peer_name) return FALSE;
-
-    segw_backup_info_t *backup = find_segw_backup(this, peer_name);
-    if (!backup || !backup->first_segw_addr) {
-        DBG1(DBG_CFG, "No primary SEGW found for peer %s", peer_name);
-        return FALSE;
-    }
-
-    ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
-        charon->ike_sa_manager, (char*)peer_name, ID_MATCH_PERFECT);
-    if (!ike_sa) {
-        DBG1(DBG_CFG, "No IKE_SA found for peer %s", peer_name);
-        return FALSE;
-    }
-
-    bool success = switch_segw(this, ike_sa, FALSE);
-    charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
-
-    if (success) {
-        backup->is_active = FALSE;
-        DBG1(DBG_CFG, "Successfully switched to 1st SEGW for peer %s", peer_name);
-    }
-
-    return success;
-}
-
-// 2nd SEGW 백업 정보 저장 (개선된 버전)
-static void store_segw_backup(private_extsock_plugin_t *this, const char *peer_name,
-                            const char *first_segw, const char *second_segw)
-{
-    if (!first_segw && !second_segw)
-    {
-        DBG1(DBG_CFG, "No SEGW addresses provided for peer %s", peer_name);
-        return;
-    }
-
-    /* Create new backup info */
-    segw_backup_info_t *backup = malloc(sizeof(segw_backup_info_t));
-    if (!backup)
-    {
-        DBG1(DBG_CFG, "Failed to allocate memory for backup info");
-        return;
-    }
-
-    backup->peer_name = strdup(peer_name);
-    backup->first_segw_addr = first_segw ? strdup(first_segw) : NULL;
-    backup->second_segw_addr = second_segw ? strdup(second_segw) : NULL;
-    backup->local_addr = strdup("%any");  // 기본값으로 %any 사용
-    backup->is_active = FALSE;
-    backup->next = NULL;
-
-    /* Calculate hash */
-    uint32_t hash = hash_peer_name(first_segw ? first_segw : second_segw) % SEGW_HASH_SIZE;
-
-    /* Store in hash table */
-    this->segw_hash_mutex->lock(this->segw_hash_mutex);
-    backup->next = this->segw_hash[hash];
-    this->segw_hash[hash] = backup;
-    this->segw_hash_mutex->unlock(this->segw_hash_mutex);
-
-    DBG1(DBG_CFG, "Stored SEGW backup info for peer %s: first=%s, second=%s",
-         peer_name, first_segw ? first_segw : "none", second_segw ? second_segw : "none");
-}
-
-// 2nd SEGW 백업 정보를 찾습니다.
-static segw_backup_info_t* find_segw_backup(private_extsock_plugin_t *this, const char *addr)
-{
-    uint32_t hash = hash_peer_name(addr) % SEGW_HASH_SIZE;
-    segw_backup_info_t *backup = NULL;
-
-    this->segw_hash_mutex->lock(this->segw_hash_mutex);
-    backup = this->segw_hash[hash];
-    while (backup)
-    {
-        if (streq(backup->first_segw_addr, addr) || streq(backup->second_segw_addr, addr))
-        {
-            break;
-        }
-        backup = backup->next;
-    }
-    this->segw_hash_mutex->unlock(this->segw_hash_mutex);
-
-    return backup;
-}
-
 // 플러그인 이름 반환 함수입니다.
-static char* extsock_plugin_get_name(plugin_t *plugin)
-{
-    (void)plugin;
+static char* extsock_plugin_get_name(plugin_t* plugin) {
+    (void)plugin; // 사용 안함
     return "extsock";
 }
 
 // 플러그인 기능 정보 반환 함수입니다. (현재 기능 없음)
-static int extsock_plugin_get_features(plugin_t *plugin, plugin_feature_t **features)
-{
-    (void)plugin;
+static int extsock_plugin_get_features(plugin_t* plugin, plugin_feature_t *features[]) {
+    (void)plugin; // 사용 안함
     *features = NULL;
     return 0;
+}
+
+// CHILD_SA UP/DOWN 이벤트 리스너 함수입니다.
+// 터널 상태 변경 시 외부로 JSON 이벤트를 전송합니다.
+static bool extsock_child_updown(listener_t *this, ike_sa_t *ike_sa, child_sa_t *child_sa, bool up)
+{
+    char buf[1024]; // 이벤트 JSON 저장 버퍼
+    uint32_t spi = child_sa->get_spi(child_sa, TRUE); // 인바운드 SPI
+    uint8_t proto = child_sa->get_protocol(child_sa); // 프로토콜 (ESP/AH)
+    const char *proto_str = (proto == IPPROTO_ESP) ? "esp" : (proto == IPPROTO_AH) ? "ah" : "unknown";
+    traffic_selector_t *local_ts, *remote_ts;
+    const char *mode_str = "unknown";
+    const char *enc_alg = "unknown";
+    const char *integ_alg = "none";
+    const char *src_str = "";
+    const char *dst_str = "";
+    const char *direction = "out"; // strongSwan child_sa_t는 보통 outbound 기준
+    const char *policy_action = "protect"; // child_sa는 보호 정책
+    char local_buf[128], remote_buf[128];
+    char src_buf[64], dst_buf[64];
+    const char *ike_sa_name = "";
+    proposal_t *proposal;
+    uint16_t alg, ks;
+
+    // IKE_SA 이름
+    if (ike_sa && ike_sa->get_name) {
+        ike_sa_name = ike_sa->get_name(ike_sa);
+    }
+
+    // 모드
+    switch (child_sa->get_mode(child_sa)) {
+        case MODE_TUNNEL: mode_str = "tunnel"; break;
+        case MODE_TRANSPORT: mode_str = "transport"; break;
+        default: mode_str = "unknown"; break;
+    }
+
+    // 암호화/무결성 알고리즘
+    proposal = child_sa->get_proposal(child_sa);
+    if (proposal) {
+        if (proposal->get_algorithm(proposal, ENCRYPTION_ALGORITHM, &alg, &ks) && alg != ENCR_UNDEFINED) {
+            enc_alg = enum_to_name(encryption_algorithm_names, alg);
+        }
+        if (proposal->get_algorithm(proposal, INTEGRITY_ALGORITHM, &alg, &ks) && alg != AUTH_UNDEFINED) {
+            integ_alg = enum_to_name(integrity_algorithm_names, alg);
+        }
+    }
+
+    // src/dst 주소
+    if (ike_sa) {
+        host_t *src = ike_sa->get_my_host(ike_sa);
+        host_t *dst = ike_sa->get_other_host(ike_sa);
+        if (src) {
+            snprintf(src_buf, sizeof(src_buf), "%H", src);
+            src_str = src_buf;
+        }
+        if (dst) {
+            snprintf(dst_buf, sizeof(dst_buf), "%H", dst);
+            dst_str = dst_buf;
+        }
+    }
+
+    // CHILD_SA의 정책(TS) 열거
+    enumerator_t *ts_enum = child_sa->create_policy_enumerator(child_sa);
+    if (ts_enum && ts_enum->enumerate(ts_enum, &local_ts, &remote_ts)) {
+        ts_to_string(local_ts, local_buf, sizeof(local_buf)); // 로컬 TS 문자열 변환
+        ts_to_string(remote_ts, remote_buf, sizeof(remote_buf)); // 원격 TS 문자열 변환
+        // 이벤트 JSON 문자열 생성
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"tunnel_%s\"," // up/down
+            "\"ike_sa_name\":\"%s\","  // IKE_SA 이름
+            "\"spi\":%u,"
+            "\"proto\":\"%s\","        // esp/ah
+            "\"mode\":\"%s\","         // tunnel/transport
+            "\"enc_alg\":\"%s\","      // 암호화 알고리즘
+            "\"integ_alg\":\"%s\","    // 무결성 알고리즘
+            "\"src\":\"%s\","          // SA src 주소
+            "\"dst\":\"%s\","          // SA dst 주소
+            "\"local_ts\":\"%s\","     // SPD: 로컬 트래픽 선택자
+            "\"remote_ts\":\"%s\","    // SPD: 원격 트래픽 선택자
+            "\"direction\":\"%s\","    // SPD: 방향
+            "\"policy_action\":\"%s\"}",// SPD: protect
+            up ? "up" : "down",
+            ike_sa_name,
+            spi,
+            proto_str,
+            mode_str,
+            enc_alg,
+            integ_alg,
+            src_str,
+            dst_str,
+            local_buf,
+            remote_buf,
+            direction,
+            policy_action
+        );
+        send_event_to_external(buf); // 외부로 이벤트 전송
+    }
+    if (ts_enum) ts_enum->destroy(ts_enum); // 열거자 해제
+    return TRUE; // 항상 성공 반환 (리스너 체인 계속)
 }
 
 // CHILD_SA UP/DOWN 이벤트 처리를 위한 리스너 인스턴스입니다.
@@ -1058,64 +712,68 @@ static listener_t extsock_listener = {
 // extsock 플러그인 생성 함수입니다. strongSwan 로드 시 호출됩니다.
 plugin_t* extsock_plugin_create()
 {
-    private_extsock_plugin_t *this = malloc(sizeof(private_extsock_plugin_t));
-    if (!this) {
-        DBG1(DBG_LIB, "Failed to allocate memory for extsock plugin");
-        return NULL;
-    }
-    memset(this, 0, sizeof(private_extsock_plugin_t));
+    // 플러그인 내부 데이터 구조체 메모리 할당 및 초기화
+    private_extsock_plugin_t *this = calloc(1, sizeof(*this));
 
+    this->sock_fd = -1; // 소켓 디스크립터 초기화
+
+    // 공개 플러그인 인터페이스 함수 포인터 설정
+    this->public.destroy = (void*)extsock_plugin_destroy;
     this->public.get_name = extsock_plugin_get_name;
     this->public.get_features = extsock_plugin_get_features;
-    this->public.destroy = (void*)extsock_plugin_destroy;
 
-    // 리스너 직접 등록
+    // 이벤트 버스에 CHILD_SA UP/DOWN 리스너 등록
     charon->bus->add_listener(charon->bus, &extsock_listener);
 
-    /* Initialize plugin resources */
-    this->sock_fd = -1;
-    this->running = TRUE;
-    
     // 인메모리 자격증명 세트 생성 및 등록
     this->creds = mem_cred_create();
     if (this->creds) {
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
+    } else { // 생성 실패 시
+        DBG1(DBG_LIB, "Failed to create mem_cred_t for extsock plugin");
+        free(this);
+        return NULL; // 플러그인 생성 실패
     }
 
     // 관리되는 피어 설정 목록 생성
     this->managed_peer_cfgs = linked_list_create();
     if (!this->managed_peer_cfgs) {
-        DBG1(DBG_LIB, "Failed to create managed peer configs list");
-        extsock_plugin_destroy(this);
+        DBG1(DBG_LIB, "Failed to create managed_peer_cfgs list");
+        lib->credmgr->remove_set(lib->credmgr, &this->creds->set); // 등록된 자격증명 세트 해제
+        this->creds->destroy(this->creds); // 자격증명 세트 해제
+        free(this);
         return NULL;
     }
 
     // 피어 설정 목록 접근 뮤텍스 생성
     this->peer_cfgs_mutex = mutex_create(MUTEX_TYPE_DEFAULT);
     if (!this->peer_cfgs_mutex) {
-        DBG1(DBG_LIB, "Failed to create peer configs mutex");
-        extsock_plugin_destroy(this);
+        DBG1(DBG_LIB, "Failed to create peer_cfgs_mutex");
+        this->managed_peer_cfgs->destroy(this->managed_peer_cfgs); // 피어 목록 해제
+        lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+        this->creds->destroy(this->creds);
+        free(this);
         return NULL;
     }
-
-    // 2nd SEGW 백업 해시 테이블 뮤텍스 생성
-    this->segw_hash_mutex = mutex_create(MUTEX_TYPE_DEFAULT);
-    if (!this->segw_hash_mutex) {
-        DBG1(DBG_LIB, "Failed to create SEGW hash mutex");
-        extsock_plugin_destroy(this);
-        return NULL;
-    }
-    memset(this->segw_hash, 0, sizeof(this->segw_hash));
 
     // 외부 명령 수신 스레드 생성 및 시작
     this->thread = thread_create((thread_main_t)socket_thread, this);
-    if (!this->thread) {
-        DBG1(DBG_LIB, "Failed to create socket thread");
-        extsock_plugin_destroy(this);
-        return NULL;
+    if (!this->thread) { // 스레드 생성 실패 시
+        DBG1(DBG_LIB, "Failed to create socket listener thread");
+        // 생성된 리소스들 해제
+        if (this->creds) {
+            lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+            this->creds->destroy(this->creds);
+        }
+        if(this->managed_peer_cfgs) this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
+        if(this->peer_cfgs_mutex) this->peer_cfgs_mutex->destroy(this->peer_cfgs_mutex);
+        charon->bus->remove_listener(charon->bus, &extsock_listener); // 리스너 해제
+        free(this);
+        return NULL; // 플러그인 생성 실패
     }
 
-    return &this->public;
+    DBG1(DBG_LIB, "extsock plugin loaded successfully"); // 플러그인 로드 성공 로그
+    return &this->public; // 공개 플러그인 인터페이스 반환
 }
 
 // extsock 플러그인 소멸자 함수입니다. strongSwan 언로드 시 호출됩니다.
@@ -1130,6 +788,7 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
             this->sock_fd = -1;
         }
         this->thread->join(this->thread); // 스레드 종료 대기
+        // this->thread->destroy(this->thread); // join이 처리하므로 보통 불필요
         this->thread = NULL;
     }
 
@@ -1157,26 +816,6 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
         this->peer_cfgs_mutex = NULL;
     }
 
-    // 2nd SEGW 백업 정보 해제
-    if (this->segw_hash_mutex) {
-        this->segw_hash_mutex->lock(this->segw_hash_mutex);
-        for (int i = 0; i < SEGW_HASH_SIZE; i++) {
-            segw_backup_info_t *backup = this->segw_hash[i];
-            while (backup) {
-                segw_backup_info_t *next = backup->next;
-                free(backup->peer_name);
-                free(backup->first_segw_addr);
-                free(backup->second_segw_addr);
-                free(backup->local_addr);
-                free(backup);
-                backup = next;
-            }
-        }
-        this->segw_hash_mutex->unlock(this->segw_hash_mutex);
-        this->segw_hash_mutex->destroy(this->segw_hash_mutex);
-        this->segw_hash_mutex = NULL;
-    }
-
     // 자격증명 세트 해제
     if (this->creds) {
         lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
@@ -1187,46 +826,43 @@ void extsock_plugin_destroy(private_extsock_plugin_t *this)
     DBG1(DBG_LIB, "extsock plugin unloaded successfully"); // 플러그인 언로드 성공 로그
     free(this); // 플러그인 내부 데이터 구조체 메모리 해제
 }
-
-/**
- * 현재 strongSwan에 등록된 peer의 설정을 charon에 다시 적용(갱신)한다.
- * peer_name으로 peer_cfg_t를 찾아, IKE/CHILD/인증 등 전체 설정을 charon에 재적용한다.
- * (실제 적용은 controller 등 strongSwan 내부 API를 사용)
- */
-static bool apply_segw_config(private_extsock_plugin_t *plugin, const char *peer_name)
+ 
+// 외부 프로그램으로 JSON 형식의 이벤트를 전송합니다.
+static void send_event_to_external(const char *event_json)
 {
-    if (!peer_name) {
-        DBG1(DBG_CFG, "apply_segw_config: peer_name is NULL");
-        return FALSE;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0); // 새 소켓 생성
+    if (fd < 0) {
+        DBG1(DBG_LIB, "send_event_to_external: Failed to create socket: %s", strerror(errno));
+        return;
     }
-    bool result = FALSE;
-    peer_cfg_t *peer_cfg = NULL;
-    plugin->peer_cfgs_mutex->lock(plugin->peer_cfgs_mutex);
-    enumerator_t *enumerator = plugin->managed_peer_cfgs->create_enumerator(plugin->managed_peer_cfgs);
-    while (enumerator->enumerate(enumerator, &peer_cfg)) {
-        if (streq(peer_cfg->get_name(peer_cfg), peer_name)) {
-            // peer_cfg를 charon에 재적용 (controller 등 내부 API 사용)
-            if (charon->controller && charon->controller->initiate) {
-                // Find the first child_cfg for this peer_cfg
-                enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
-                child_cfg_t *child_cfg = NULL;
-                if (child_enum->enumerate(child_enum, &child_cfg)) {
-                    status_t status = charon->controller->initiate(
-                        charon->controller, peer_cfg, child_cfg, NULL, NULL, LEVEL_CTRL, 0, FALSE);
-                    result = (status == SUCCESS);
-                    DBG1(DBG_CFG, "apply_segw_config: re-initiated connection for %s (status=%d)", peer_name, status);
-                }
-                child_enum->destroy(child_enum);
-            } else {
-                DBG1(DBG_CFG, "apply_segw_config: controller or initiate not available");
-            }
-            break;
+    struct sockaddr_un addr; // 소켓 주소
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path)-1);
+
+    // 외부 프로그램(수신측) 소켓에 연결 시도
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+        // 연결 성공 시 이벤트 JSON 전송
+        ssize_t written = write(fd, event_json, strlen(event_json));
+        if (written < 0) { // 쓰기 실패
+            DBG1(DBG_LIB, "Failed to write to socket: %s", strerror(errno));
         }
+    } else { // 연결 실패
+         DBG1(DBG_LIB, "send_event_to_external: Failed to connect to socket %s: %s", SOCKET_PATH, strerror(errno));
     }
-    enumerator->destroy(enumerator);
-    plugin->peer_cfgs_mutex->unlock(plugin->peer_cfgs_mutex);
-    if (!result) {
-        DBG1(DBG_CFG, "apply_segw_config: failed to reload peer config for %s", peer_name);
-    }
-    return result;
+    close(fd); // 소켓 닫기
 }
+
+// traffic_selector_t 객체를 문자열로 변환하여 버퍼에 저장합니다.
+// strongSwan의 %R 포맷 지정자를 사용합니다.
+static void ts_to_string(traffic_selector_t *ts, char *buf, size_t buflen)
+{
+    if (ts && buf && buflen > 0) // 유효한 입력값인지 확인
+    {
+        snprintf(buf, buflen, "%R", ts); // %R은 strongSwan 내부 타입 포맷팅
+    }
+    else if (buf && buflen > 0) // TS가 NULL이어도 버퍼는 초기화
+    {
+        buf[0] = '\0'; // 빈 문자열로 설정
+    }
+} 
