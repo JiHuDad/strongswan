@@ -1,0 +1,125 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan extsock Plugin Development Guide
+
+## Architecture Overview
+
+The extsock plugin follows Clean Architecture principles with clear separation of concerns:
+
+### Core Structure
+- **Main Plugin**: [extsock_plugin.c](mdc:src/libcharon/plugins/extsock/extsock_plugin.c) - Plugin entry point and initialization
+- **Common Types**: [extsock_types.h](mdc:src/libcharon/plugins/extsock/common/extsock_types.h) - Shared type definitions
+- **Error Handling**: [extsock_errors.h](mdc:src/libcharon/plugins/extsock/common/extsock_errors.h) and [extsock_errors.c](mdc:src/libcharon/plugins/extsock/common/extsock_errors.c)
+
+### Layer Structure
+```
+├── domain/          # Business logic entities
+├── usecases/        # Application use cases
+├── adapters/        # External interface adapters
+│   ├── json/        # JSON parsing
+│   ├── socket/      # Socket communication
+│   └── strongswan/  # strongSwan API integration
+├── interfaces/      # Abstract interfaces
+└── common/          # Shared utilities
+```
+
+## Build Configuration
+
+### Main Build System
+- **Primary Makefile**: [Makefile.am](mdc:src/libcharon/plugins/extsock/Makefile.am)
+- **Build Dependencies**: Requires libcjson-dev for JSON parsing
+
+### Test Build System
+- **Test Makefile**: [Makefile.tests](mdc:src/libcharon/plugins/extsock/test/Makefile.tests)
+- **Test Dependencies**: libcheck, libsubunit, gcovr, valgrind, cppcheck
+
+## Testing Framework
+
+### Test Structure
+- **Simple Test**: [test_simple.c](mdc:src/libcharon/plugins/extsock/test/test_simple.c) - Basic type and error creation tests
+- **Unit Tests**: Located in `test/unit/` directory
+- **Integration Tests**: Located in `test/integration/` directory
+
+### Running Tests
+```bash
+# Build and run simple test
+make -f Makefile.tests test_simple
+export LD_LIBRARY_PATH="../../../../../src/libstrongswan/.libs:../../../../../src/libcharon/.libs:$LD_LIBRARY_PATH"
+./test_simple
+
+# Run all unit tests
+make -f Makefile.tests run-unit
+
+# Generate coverage report
+make -f Makefile.tests coverage
+```
+
+## Development Guidelines
+
+### Compilation Requirements
+- Include strongSwan config.h: `-include ../../../../../config.h`
+- Required defines: `-D_GNU_SOURCE -DHAVE_CONFIG_H`
+- Test-specific define: `-DUNIT_TEST`
+
+### Error Handling Pattern
+- Use `extsock_error_create()` for error object creation
+- Always call `extsock_error_destroy()` to prevent memory leaks
+- Error codes defined in [extsock_types.h](mdc:src/libcharon/plugins/extsock/common/extsock_types.h)
+
+### Library Dependencies
+- **Runtime**: libstrongswan, libcharon, libcjson
+- **Testing**: libcheck, libsubunit
+- **Analysis**: gcovr, valgrind, cppcheck
+
+## Common Issues and Solutions
+
+### Build Issues
+1. **Missing config.h**: Add `-include ../../../../../config.h` to CFLAGS
+2. **Type definition errors**: Ensure `_GNU_SOURCE` and `HAVE_CONFIG_H` are defined
+3. **Link errors**: Add `-lsubunit` for check framework
+
+### Runtime Issues
+1. **Library loading**: Set `LD_LIBRARY_PATH` to include strongSwan library paths
+2. **strongSwan initialization**: Always call `library_init()` before tests and `library_deinit()` after
+
+### Plugin Integration
+- Plugin must be added to strongSwan's plugin list in charon configuration
+- Build system integration requires updating parent Makefile.am files
+
+## File Templates
+
+### Basic Test File Structure
+```c
+#include <check.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <library.h>
+#include "../common/extsock_types.h"
+#include "../common/extsock_errors.h"
+
+START_TEST(test_name)
+{
+    // Test implementation
+}
+END_TEST
+
+int main(void)
+{
+    library_init(NULL, "test-name");
+    
+    Suite *s = suite_create("TestSuite");
+    TCase *tc = tcase_create("Core");
+    tcase_add_test(tc, test_name);
+    suite_add_tcase(s, tc);
+    
+    SRunner *sr = srunner_create(s);
+    srunner_run_all(sr, CK_NORMAL);
+    int failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    
+    library_deinit();
+    return (failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+}

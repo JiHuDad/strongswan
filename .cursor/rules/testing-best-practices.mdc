@@ -1,0 +1,205 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Testing Best Practices for strongSwan Plugins
+
+## Test Framework Setup
+
+### Required Dependencies
+Install testing dependencies before building tests:
+```bash
+sudo apt install -y libcheck-dev libsubunit-dev gcovr valgrind cppcheck
+```
+
+### Test Makefile Structure
+The [test Makefile](mdc:src/libcharon/plugins/extsock/test/Makefile.tests) should include:
+- Proper compiler flags with config.h inclusion
+- Library paths for strongSwan libraries
+- Coverage and analysis tool integration
+- Environment variable setup for test execution
+
+## Test Organization
+
+### Directory Structure
+```
+test/
+├── Makefile.tests          # Test build configuration
+├── test_simple.c           # Basic functionality tests
+├── unit/                   # Unit tests for individual components
+│   ├── test_json_parser.c
+│   └── test_socket_adapter.c
+└── integration/            # End-to-end integration tests
+    └── test_full_workflow.c
+```
+
+### Test Categories
+1. **Simple Tests**: Basic type definitions and object creation
+2. **Unit Tests**: Individual component functionality
+3. **Integration Tests**: Component interaction and workflows
+4. **Performance Tests**: Benchmarking and stress testing
+
+## Test Implementation Pattern
+
+### Basic Test Structure
+Follow this template for new tests:
+```c
+#include <check.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <library.h>
+#include "../common/extsock_types.h"
+#include "../common/extsock_errors.h"
+
+START_TEST(test_component_function)
+{
+    // Setup
+    library_init(NULL, "test-name");
+    
+    // Test logic with assertions
+    ck_assert_ptr_ne(object, NULL);
+    ck_assert_int_eq(result, expected);
+    ck_assert_str_eq(string, expected_string);
+    
+    // Cleanup
+    if (object) object->destroy(object);
+    library_deinit();
+}
+END_TEST
+```
+
+### Memory Management in Tests
+- Always initialize strongSwan library: `library_init(NULL, "test-name")`
+- Always cleanup: `library_deinit()`
+- Free allocated resources: `object->destroy(object)` or `free(ptr)`
+- Use `ck_assert_ptr_ne(ptr, NULL)` to verify allocations
+
+## Build and Execution
+
+### Compilation Requirements
+```makefile
+CFLAGS += -include ../../../../../config.h
+CFLAGS += -D_GNU_SOURCE -DHAVE_CONFIG_H -DUNIT_TEST
+LDFLAGS += -lcheck -lsubunit -lstrongswan -lcharon
+```
+
+### Environment Setup
+Tests require proper library paths:
+```bash
+export LD_LIBRARY_PATH="../../../../../src/libstrongswan/.libs:../../../../../src/libcharon/.libs:$LD_LIBRARY_PATH"
+```
+
+### Running Tests
+```bash
+# Build specific test
+make -f Makefile.tests test_simple
+
+# Run with proper environment
+export LD_LIBRARY_PATH="..." && ./test_simple
+
+# Run all unit tests
+make -f Makefile.tests run-unit
+
+# Generate coverage report
+make -f Makefile.tests coverage
+```
+
+## Quality Assurance
+
+### Code Coverage
+Monitor test coverage using gcovr:
+```bash
+make -f Makefile.tests coverage
+# Generates coverage_report.html
+```
+
+### Memory Leak Detection
+Run tests with Valgrind:
+```bash
+make -f Makefile.tests valgrind-unit
+```
+
+### Static Analysis
+Use cppcheck for static analysis:
+```bash
+make -f Makefile.tests static-analysis
+```
+
+## Common Test Patterns
+
+### Error Handling Tests
+```c
+START_TEST(test_error_creation)
+{
+    extsock_error_info_t *error = extsock_error_create(
+        EXTSOCK_ERROR_JSON_PARSE, "Test error message"
+    );
+    
+    ck_assert_ptr_ne(error, NULL);
+    ck_assert_int_eq(error->code, EXTSOCK_ERROR_JSON_PARSE);
+    ck_assert_str_eq(error->message, "Test error message");
+    
+    extsock_error_destroy(error);
+}
+END_TEST
+```
+
+### Component Interface Tests
+```c
+START_TEST(test_component_interface)
+{
+    component_t *comp = component_create();
+    ck_assert_ptr_ne(comp, NULL);
+    
+    // Test interface methods
+    result_t result = comp->method(comp, param);
+    ck_assert_int_eq(result, EXPECTED_RESULT);
+    
+    comp->destroy(comp);
+}
+END_TEST
+```
+
+### Integration Test Pattern
+```c
+START_TEST(test_full_workflow)
+{
+    library_init(NULL, "integration-test");
+    
+    // Setup multiple components
+    parser_t *parser = json_parser_create();
+    adapter_t *adapter = socket_adapter_create();
+    
+    // Test workflow
+    config_t *config = parser->parse(parser, json_data);
+    ck_assert_ptr_ne(config, NULL);
+    
+    bool success = adapter->apply_config(adapter, config);
+    ck_assert(success);
+    
+    // Cleanup
+    config->destroy(config);
+    adapter->destroy(adapter);
+    parser->destroy(parser);
+    library_deinit();
+}
+END_TEST
+```
+
+## Debugging Test Failures
+
+### Compilation Issues
+1. **Missing config.h**: Ensure `-include config.h` in CFLAGS
+2. **Undefined types**: Check `_GNU_SOURCE` and `HAVE_CONFIG_H` defines
+3. **Link errors**: Verify all required libraries in LDFLAGS
+
+### Runtime Issues
+1. **Library not found**: Set `LD_LIBRARY_PATH` correctly
+2. **Segmentation faults**: Use `gdb ./test_name` for debugging
+3. **Memory leaks**: Run with `valgrind --leak-check=full`
+
+### Check Framework Specifics
+- Use `CK_FORK=no` environment variable to disable forking for easier debugging
+- Run with `--verbose` for detailed test output
+- Check return codes: 0 = success, non-zero = failure

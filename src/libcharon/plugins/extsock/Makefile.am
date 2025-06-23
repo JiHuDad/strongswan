@@ -17,12 +17,28 @@ else
 plugin_LTLIBRARIES = libstrongswan-extsock.la
 endif
 
-# libextsock.la를 빌드하기 위한 소스 파일 목록입니다.
-# extsock_plugin.c가 주 소스파일이고, extsock.h는 헤더로 가정합니다.
-libstrongswan_extsock_la_SOURCES = extsock_plugin.c
+# Clean Architecture 모든 소스 파일 포함
+libstrongswan_extsock_la_SOURCES = \
+    extsock_plugin.c \
+    common/extsock_types.h \
+    common/extsock_common.h \
+    interfaces/extsock_config_repository.h \
+    interfaces/extsock_event_publisher.h \
+    interfaces/extsock_command_handler.h \
+    adapters/json/extsock_json_parser.h \
+    adapters/json/extsock_json_parser.c \
+    adapters/socket/extsock_socket_adapter.h \
+    adapters/socket/extsock_socket_adapter.c \
+    adapters/strongswan/extsock_strongswan_adapter.h \
+    adapters/strongswan/extsock_strongswan_adapter.c \
+    domain/extsock_config_entity.h \
+    domain/extsock_config_entity.c \
+    usecases/extsock_config_usecase.h \
+    usecases/extsock_config_usecase.c \
+    usecases/extsock_event_usecase.h \
+    usecases/extsock_event_usecase.c
 
-# 플러그인이 링크해야 할 다른 라이브러리가 있다면 여기에 추가합니다.
-# 외부 cJSON 라이브러리를 사용하므로 -lcjson 을 추가합니다.
+# cJSON 라이브러리 링크
 libstrongswan_extsock_la_LIBADD = $(EXTSOCK_LIBS)
 
 # Libtool 라이브러리를 빌드할 때 사용되는 LDFLAGS입니다.

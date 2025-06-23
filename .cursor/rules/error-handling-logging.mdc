@@ -1,0 +1,397 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Error Handling and Logging System Rules
+
+## 계층적 에러 처리 시스템
+
+### 에러 코드 체계
+```c
+// 체계적인 에러 코드 분류
+typedef enum {
+    // 메모리 관련 (100번대)
+    EXTSOCK_ERROR_MEMORY_ALLOCATION = 101,
+    EXTSOCK_ERROR_MEMORY_NULL_POINTER = 102,
+    EXTSOCK_ERROR_MEMORY_BUFFER_OVERFLOW = 103,
+    
+    // 설정 관련 (200번대)
+    EXTSOCK_ERROR_CONFIG_INVALID_FORMAT = 201,
+    EXTSOCK_ERROR_CONFIG_MISSING_REQUIRED = 202,
+    EXTSOCK_ERROR_CONFIG_VALUE_OUT_OF_RANGE = 203,
+    
+    // JSON 파싱 (300번대)
+    EXTSOCK_ERROR_JSON_PARSE_FAILED = 301,
+    EXTSOCK_ERROR_JSON_INVALID_STRUCTURE = 302,
+    EXTSOCK_ERROR_JSON_TYPE_MISMATCH = 303,
+    
+    // strongSwan API (400번대)
+    EXTSOCK_ERROR_STRONGSWAN_API_FAILED = 401,
+    EXTSOCK_ERROR_STRONGSWAN_NOT_INITIALIZED = 402,
+    EXTSOCK_ERROR_STRONGSWAN_INVALID_STATE = 403,
+    
+    // 네트워크/소켓 (500번대)
+    EXTSOCK_ERROR_SOCKET_CREATE_FAILED = 501,
+    EXTSOCK_ERROR_SOCKET_BIND_FAILED = 502,
+    EXTSOCK_ERROR_SOCKET_ACCEPT_FAILED = 503,
+    EXTSOCK_ERROR_NETWORK_CONNECTION_LOST = 504,
+} extsock_error_code_t;
+```
+
+### 에러 정보 구조체
+```c
+typedef struct {
+    extsock_error_code_t code;
+    extsock_error_severity_t severity;
+    char message[256];
+    char file[64];
+    int line;
+    char function[64];
+    uint64_t timestamp;
+    pthread_t thread_id;
+    
+    // 복구 정보
+    bool recoverable;
+    int retry_delay_ms;
+    int max_retries;
+    
+    // 상세 정보
+    void *context;
+    char details[512];
+} extsock_error_info_t;
+```
+
+### 에러 처리 매크로
+```c
+// 기본 에러 생성 및 처리
+#define EXTSOCK_ERROR_CREATE(code, message) \
+    extsock_error_create(code, __FILE__, __LINE__, __func__, message)
+
+// 조건부 에러 처리
+#define EXTSOCK_CHECK_AND_HANDLE(condition, error_code, message) \
+    if (!(condition)) { \
+        EXTSOCK_LOG_ERROR(message); \
+        return EXTSOCK_ERROR_CREATE(error_code, message); \
+    }
+
+// 재시도 로직
+#define EXTSOCK_RETRY_ON_ERROR(operation, max_retries, delay_ms) \
+    do { \
+        int _retry_count = 0; \
+        extsock_error_info_t *_error = NULL; \
+        while (_retry_count < max_retries) { \
+            _error = (operation); \
+            if (!_error || _error->code == EXTSOCK_SUCCESS) break; \
+            if (!_error->recoverable) break; \
+            usleep(delay_ms * 1000); \
+            _retry_count++; \
+        } \
+        if (_error && _error->code != EXTSOCK_SUCCESS) return _error; \
+    } while(0)
+
+// 자동 로깅
+#define EXTSOCK_LOG_ERROR(message) \
+    extsock_log(EXTSOCK_LOG_ERROR, __FILE__, __LINE__, __func__, message)
+```
+
+## 고급 로깅 시스템
+
+### 로그 레벨 및 설정
+```c
+typedef enum {
+    EXTSOCK_LOG_TRACE = 0,
+    EXTSOCK_LOG_DEBUG = 1,
+    EXTSOCK_LOG_INFO = 2,
+    EXTSOCK_LOG_WARN = 3,
+    EXTSOCK_LOG_ERROR = 4,
+    EXTSOCK_LOG_FATAL = 5,
+    EXTSOCK_LOG_OFF = 6
+} extsock_log_level_t;
+
+typedef enum {
+    EXTSOCK_LOG_OUTPUT_CONSOLE = 1,
+    EXTSOCK_LOG_OUTPUT_FILE = 2,
+    EXTSOCK_LOG_OUTPUT_SYSLOG = 4,
+    EXTSOCK_LOG_OUTPUT_CALLBACK = 8
+} extsock_log_output_t;
+
+typedef enum {
+    EXTSOCK_LOG_FORMAT_SIMPLE,     // [LEVEL] message
+    EXTSOCK_LOG_FORMAT_DETAILED,   // [timestamp] [thread] [level] [component] message
+    EXTSOCK_LOG_FORMAT_JSON,       // {"timestamp": "", "level": "", "message": ""}
+    EXTSOCK_LOG_FORMAT_CUSTOM      // 사용자 정의 포맷
+} extsock_log_format_t;
+```
+
+### 로깅 매크로 시스템
+```c
+// 기본 로깅 매크로
+#define EXTSOCK_LOG_TRACE(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_TRACE, msg, ##__VA_ARGS__)
+
+#define EXTSOCK_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_DEBUG, msg, ##__VA_ARGS__)
+
+#define EXTSOCK_LOG_INFO(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_INFO, msg, ##__VA_ARGS__)
+
+#define EXTSOCK_LOG_WARN(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_WARN, msg, ##__VA_ARGS__)
+
+#define EXTSOCK_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_ERROR, msg, ##__VA_ARGS__)
+
+#define EXTSOCK_LOG_FATAL(msg, ...) \
+    EXTSOCK_LOG(EXTSOCK_LOG_FATAL, msg, ##__VA_ARGS__)
+
+// 함수 진입/종료 추적
+#define EXTSOCK_LOG_FUNCTION_ENTER() \
+    EXTSOCK_LOG_TRACE(">>> Entering %s", __func__)
+
+#define EXTSOCK_LOG_FUNCTION_EXIT() \
+    EXTSOCK_LOG_TRACE("<<< Exiting %s", __func__)
+
+// 성능 측정
+#define EXTSOCK_LOG_PERFORMANCE_START(operation) \
+    struct timespec _start_##operation; \
+    clock_gettime(CLOCK_MONOTONIC, &_start_##operation); \
+    EXTSOCK_LOG_DEBUG("Performance tracking started: %s", #operation)
+
+#define EXTSOCK_LOG_PERFORMANCE_END(operation) \
+    do { \
+        struct timespec _end; \
+        clock_gettime(CLOCK_MONOTONIC, &_end); \
+        double _duration = (_end.tv_sec - _start_##operation.tv_sec) * 1000.0 + \
+                          (_end.tv_nsec - _start_##operation.tv_nsec) / 1000000.0; \
+        EXTSOCK_LOG_INFO("Performance: %s completed in %.2f ms", #operation, _duration); \
+    } while(0)
+
+// 조건부 로깅
+#define EXTSOCK_LOG_IF(condition, level, msg, ...) \
+    if (condition) EXTSOCK_LOG(level, msg, ##__VA_ARGS__)
+
+// 한 번만 로깅
+#define EXTSOCK_LOG_ONCE(level, msg, ...) \
+    do { \
+        static bool _logged = false; \
+        if (!_logged) { \
+            EXTSOCK_LOG(level, msg, ##__VA_ARGS__); \
+            _logged = true; \
+        } \
+    } while(0)
+
+// 속도 제한 로깅 (1초에 최대 5회)
+#define EXTSOCK_LOG_RATE_LIMITED(level, msg, ...) \
+    do { \
+        static time_t _last_log_time = 0; \
+        static int _log_count = 0; \
+        time_t _current_time = time(NULL); \
+        if (_current_time != _last_log_time) { \
+            _last_log_time = _current_time; \
+            _log_count = 0; \
+        } \
+        if (_log_count < 5) { \
+            EXTSOCK_LOG(level, msg, ##__VA_ARGS__); \
+            _log_count++; \
+        } \
+    } while(0)
+
+// 헥사덤프 로깅
+#define EXTSOCK_LOG_HEXDUMP(data, len, msg) \
+    extsock_log_hexdump(EXTSOCK_LOG_DEBUG, data, len, msg)
+```
+
+### 컴포넌트별 전용 로깅
+```c
+// JSON Parser 전용 로깅
+#define JSON_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG_DEBUG("[JSON] " msg, ##__VA_ARGS__)
+#define JSON_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG_ERROR("[JSON] " msg, ##__VA_ARGS__)
+
+// Socket Adapter 전용 로깅
+#define SOCKET_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG_DEBUG("[SOCKET] " msg, ##__VA_ARGS__)
+#define SOCKET_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG_ERROR("[SOCKET] " msg, ##__VA_ARGS__)
+
+// strongSwan Adapter 전용 로깅
+#define STRONGSWAN_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG_DEBUG("[STRONGSWAN] " msg, ##__VA_ARGS__)
+#define STRONGSWAN_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG_ERROR("[STRONGSWAN] " msg, ##__VA_ARGS__)
+
+// Config Use Case 전용 로깅
+#define CONFIG_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG_DEBUG("[CONFIG] " msg, ##__VA_ARGS__)
+#define CONFIG_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG_ERROR("[CONFIG] " msg, ##__VA_ARGS__)
+
+// Event Use Case 전용 로깅
+#define EVENT_LOG_DEBUG(msg, ...) \
+    EXTSOCK_LOG_DEBUG("[EVENT] " msg, ##__VA_ARGS__)
+#define EVENT_LOG_ERROR(msg, ...) \
+    EXTSOCK_LOG_ERROR("[EVENT] " msg, ##__VA_ARGS__)
+```
+
+## 에러 복구 및 재시도 전략
+
+### 재시도 가능한 에러 분류
+```c
+bool extsock_error_is_recoverable(extsock_error_code_t code) {
+    switch (code) {
+        // 일시적 네트워크 오류
+        case EXTSOCK_ERROR_NETWORK_CONNECTION_LOST:
+        case EXTSOCK_ERROR_SOCKET_ACCEPT_FAILED:
+            return true;
+            
+        // 일시적 리소스 부족
+        case EXTSOCK_ERROR_MEMORY_ALLOCATION:
+            return true;
+            
+        // 복구 불가능한 오류
+        case EXTSOCK_ERROR_CONFIG_INVALID_FORMAT:
+        case EXTSOCK_ERROR_JSON_PARSE_FAILED:
+            return false;
+            
+        default:
+            return false;
+    }
+}
+
+int extsock_error_get_retry_delay(extsock_error_code_t code) {
+    switch (code) {
+        case EXTSOCK_ERROR_NETWORK_CONNECTION_LOST:
+            return 1000; // 1초
+        case EXTSOCK_ERROR_MEMORY_ALLOCATION:
+            return 100;  // 100ms
+        default:
+            return 500;  // 기본 500ms
+    }
+}
+```
+
+### 지수 백오프 재시도
+```c
+#define EXTSOCK_RETRY_WITH_BACKOFF(operation, max_retries, base_delay_ms) \
+    do { \
+        int _retry_count = 0; \
+        int _delay = base_delay_ms; \
+        extsock_error_info_t *_error = NULL; \
+        while (_retry_count < max_retries) { \
+            _error = (operation); \
+            if (!_error || _error->code == EXTSOCK_SUCCESS) break; \
+            if (!_error->recoverable) break; \
+            EXTSOCK_LOG_WARN("Retry %d/%d after %dms delay", \
+                           _retry_count + 1, max_retries, _delay); \
+            usleep(_delay * 1000); \
+            _delay *= 2; /* 지수 백오프 */ \
+            _retry_count++; \
+        } \
+        if (_error && _error->code != EXTSOCK_SUCCESS) return _error; \
+    } while(0)
+```
+
+## 로그 관리 및 모니터링
+
+### 로그 로테이션
+```c
+typedef struct {
+    char log_file_path[256];
+    size_t max_file_size;    // bytes
+    int max_backup_files;
+    bool compress_backup;
+} extsock_log_rotation_config_t;
+
+// 로그 파일 크기 확인 및 로테이션
+void extsock_log_check_rotation() {
+    static time_t last_check = 0;
+    time_t now = time(NULL);
+    
+    // 5분마다 확인
+    if (now - last_check < 300) return;
+    last_check = now;
+    
+    struct stat st;
+    if (stat(log_config.file_path, &st) == 0) {
+        if (st.st_size > log_config.max_file_size) {
+            extsock_log_rotate();
+        }
+    }
+}
+```
+
+### 성능 메트릭스 로깅
+```c
+typedef struct {
+    uint64_t total_logs;
+    uint64_t error_count;
+    uint64_t warning_count;
+    double avg_processing_time_ms;
+    time_t start_time;
+} extsock_log_metrics_t;
+
+// 메트릭스를 주기적으로 로깅
+void extsock_log_metrics_periodic() {
+    static time_t last_report = 0;
+    time_t now = time(NULL);
+    
+    // 10분마다 메트릭스 보고
+    if (now - last_report >= 600) {
+        extsock_log_metrics_t *metrics = extsock_get_log_metrics();
+        EXTSOCK_LOG_INFO("Log metrics: total=%lu, errors=%lu, warnings=%lu, "
+                        "avg_time=%.2fms, uptime=%lds",
+                        metrics->total_logs, metrics->error_count,
+                        metrics->warning_count, metrics->avg_processing_time_ms,
+                        now - metrics->start_time);
+        last_report = now;
+    }
+}
+```
+
+### 디버그 정보 수집
+```c
+// 시스템 상태 정보 로깅
+#define EXTSOCK_LOG_SYSTEM_INFO() \
+    do { \
+        struct rusage usage; \
+        getrusage(RUSAGE_SELF, &usage); \
+        EXTSOCK_LOG_INFO("System info: memory=%ldkB, cpu_time=%ld.%06lds", \
+                        usage.ru_maxrss, usage.ru_utime.tv_sec, usage.ru_utime.tv_usec); \
+    } while(0)
+
+// 스레드 정보 로깅
+#define EXTSOCK_LOG_THREAD_INFO() \
+    do { \
+        pthread_t tid = pthread_self(); \
+        EXTSOCK_LOG_DEBUG("Thread info: id=%lu", (unsigned long)tid); \
+    } while(0)
+```
+
+## 로깅 보안 및 개인정보 보호
+
+### 민감한 정보 필터링
+```c
+// 민감한 정보를 마스킹하는 로깅
+#define EXTSOCK_LOG_SECURE(level, format, ...) \
+    do { \
+        char _sanitized_msg[1024]; \
+        snprintf(_sanitized_msg, sizeof(_sanitized_msg), format, ##__VA_ARGS__); \
+        extsock_sanitize_log_message(_sanitized_msg); \
+        EXTSOCK_LOG(level, "%s", _sanitized_msg); \
+    } while(0)
+
+// IP 주소 마스킹 예시
+void extsock_sanitize_log_message(char *message) {
+    // IP 주소 패턴을 xxx.xxx.xxx.xxx로 마스킹
+    // 비밀번호, 키 등도 마스킹
+}
+```
+
+---
+
+## 참고 파일
+- [extsock_errors.h](mdc:src/libcharon/plugins/extsock/common/extsock_errors.h) - 에러 시스템 정의
+- [extsock_errors.c](mdc:src/libcharon/plugins/extsock/common/extsock_errors.c) - 에러 시스템 구현
+- [extsock_logging.h](mdc:src/libcharon/plugins/extsock/common/extsock_logging.h) - 로깅 시스템 정의

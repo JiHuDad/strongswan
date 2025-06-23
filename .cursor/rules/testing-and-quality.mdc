@@ -1,0 +1,167 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Testing and Code Quality Rules
+
+## 테스트 주도 개발 (TDD) 가이드
+
+### 테스트 우선 원칙
+- **Red-Green-Refactor**: 실패하는 테스트 → 최소 구현 → 리팩토링
+- **테스트 커버리지 95% 이상**: 모든 공개 인터페이스 커버
+- **Mock을 통한 격리**: 외부 의존성과 분리된 단위 테스트
+- **통합 테스트로 시나리오 검증**: 실제 워크플로우 테스트
+
+### 테스트 구조 및 네이밍
+```c
+// 테스트 함수 네이밍 컨벤션
+void test_[component]_[scenario]_[expected_result]()
+
+// 예시
+void test_json_parser_parse_proposals_valid_json()
+void test_socket_adapter_create_socket_success()
+void test_config_usecase_apply_config_invalid_input()
+```
+
+### 테스트 데이터 관리
+```
+test/
+├── fixtures/           # 테스트용 정적 데이터
+│   ├── valid_config.json
+│   ├── invalid_config.json
+│   └── sample_proposals.json
+├── mocks/             # Mock 객체 구현
+│   ├── mock_command_handler.c
+│   ├── mock_event_publisher.c
+│   └── mock_config_repository.c
+└── helpers/           # 테스트 유틸리티
+    ├── test_utils.c
+    └── memory_tracker.c
+```
+
+## 코드 품질 메트릭 및 도구
+
+### 정적 분석 도구
+```makefile
+# 코드 품질 검사
+static-analysis:
+	cppcheck --enable=all --std=c99 src/
+	clang-static-analyzer src/
+	scan-build make
+
+# 복잡도 분석
+complexity-check:
+	pmccabe src/**/*.c | sort -nr
+	lizard src/ --CCN 10
+```
+
+### 메모리 검사 및 프로파일링
+```makefile
+# 메모리 누수 검사
+valgrind-check:
+	valgrind --leak-check=full --show-leak-kinds=all ./test_binary
+
+# 성능 프로파일링
+profile:
+	perf record -g ./application
+	perf report
+
+# 스레드 안전성 검사
+thread-safety:
+	helgrind ./multi_threaded_test
+```
+
+### 코드 커버리지 추적
+```makefile
+coverage:
+	gcov -r src/*.c
+	gcovr --html-details coverage_report.html
+	genhtml coverage.info --output-directory coverage_html
+```
+
+## 지속적 통합 (CI) 파이프라인
+
+### 자동화된 품질 게이트
+```yaml
+# .github/workflows/quality-check.yml 예시
+quality_gates:
+  - compile_check: 컴파일 에러 0건
+  - unit_tests: 모든 단위 테스트 통과
+  - integration_tests: 통합 테스트 통과
+  - coverage_check: 커버리지 95% 이상
+  - static_analysis: 정적 분석 이슈 0건
+  - memory_check: 메모리 누수 0건
+  - security_scan: 보안 취약점 0건
+```
+
+### 성능 벤치마크
+```c
+// 성능 테스트 예시
+#include "benchmark.h"
+
+void benchmark_json_parsing() {
+    BENCHMARK_START("json_parsing_1000_configs");
+    for (int i = 0; i < 1000; i++) {
+        parse_config_from_json(sample_json);
+    }
+    BENCHMARK_END("json_parsing_1000_configs");
+    
+    // 목표: 1000개 설정 파싱 < 100ms
+    ASSERT_PERFORMANCE(benchmark_get_duration("json_parsing_1000_configs") < 100.0);
+}
+```
+
+## 코드 리뷰 체크리스트
+
+### 아키텍처 관점
+- [ ] Clean Architecture 계층 준수
+- [ ] 의존성 방향 올바름 (안쪽 → 바깥쪽)
+- [ ] 인터페이스 추상화 적절히 사용
+- [ ] 단일 책임 원칙 (SRP) 준수
+- [ ] 개방-폐쇄 원칙 (OCP) 준수
+
+### 코드 품질 관점
+- [ ] 함수 크기 50라인 이하
+- [ ] 매개변수 수 5개 이하
+- [ ] 중첩 깊이 3단계 이하
+- [ ] 순환 복잡도 10 이하
+- [ ] 의미 있는 변수/함수명
+
+### 테스트 관점
+- [ ] 새 기능에 대한 테스트 존재
+- [ ] 테스트 커버리지 95% 이상 유지
+- [ ] Edge case 및 예외 상황 테스트
+- [ ] Mock을 통한 의존성 격리
+- [ ] 테스트 실행 시간 합리적
+
+### 보안 관점
+- [ ] 입력 검증 적절히 수행
+- [ ] 버퍼 오버플로우 방지
+- [ ] 메모리 누수 없음
+- [ ] 권한 검사 수행
+- [ ] 민감한 정보 로깅 없음
+
+## 문서화 품질 관리
+
+### API 문서 체크리스트
+- [ ] 모든 공개 함수/구조체 문서화
+- [ ] 매개변수 및 반환값 설명
+- [ ] 사용 예제 코드 포함
+- [ ] 에러 조건 및 예외 사항 명시
+- [ ] 성능 특성 및 제약사항 설명
+
+### 아키텍처 문서 검증
+- [ ] 현재 구현과 문서 일치
+- [ ] 설계 결정 배경 설명
+- [ ] 다이어그램 정확성
+- [ ] 확장 가이드 제공
+- [ ] 변경 이력 추적
+
+---
+
+## 참고 파일
+- [test_json_parser.c](mdc:src/libcharon/plugins/extsock/test/unit/test_json_parser.c) - JSON 파서 단위 테스트
+- [test_socket_adapter.c](mdc:src/libcharon/plugins/extsock/test/unit/test_socket_adapter.c) - 소켓 어댑터 테스트
+- [test_full_workflow.c](mdc:src/libcharon/plugins/extsock/test/integration/test_full_workflow.c) - 통합 테스트
+- [Makefile.tests](mdc:src/libcharon/plugins/extsock/test/Makefile.tests) - 테스트 자동화 스크립트

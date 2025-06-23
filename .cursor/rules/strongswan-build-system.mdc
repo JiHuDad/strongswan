@@ -1,0 +1,139 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan Build System Guide
+
+## Project Structure
+
+strongSwan is organized as a large autotools-based project with multiple components:
+
+### Main Configuration
+- **Root Configure**: [configure.ac](mdc:configure.ac) - Main autotools configuration
+- **Root Makefile**: [Makefile.am](mdc:Makefile.am) - Top-level build rules
+
+### Core Libraries
+- **libstrongswan**: [src/libstrongswan/](mdc:src/libstrongswan/) - Core cryptographic and utility library
+- **libcharon**: [src/libcharon/](mdc:src/libcharon/) - IKE daemon library
+- **libipsec**: [src/libipsec/](mdc:src/libipsec/) - IPsec processing library
+
+### Plugin System
+- **Plugin Directory**: [src/libcharon/plugins/](mdc:src/libcharon/plugins/) - All charon plugins
+- **Plugin Template**: Each plugin has its own subdirectory with Makefile.am
+
+## Build Process
+
+### Initial Setup
+```bash
+# Generate configure script (if needed)
+./autogen.sh
+
+# Configure with debugging and plugin
+./configure --enable-extsock --enable-debug
+
+# Build entire project
+make -j4
+
+# Install (optional)
+sudo make install
+```
+
+### Plugin-Specific Build
+```bash
+# Build specific plugin
+cd src/libcharon/plugins/extsock
+make -j4
+
+# Build from project root targeting plugin
+make -C src/libcharon/plugins/extsock
+```
+
+## Plugin Integration
+
+### Makefile.am Requirements
+A plugin's [Makefile.am](mdc:src/libcharon/plugins/extsock/Makefile.am) must:
+1. Define the plugin library target
+2. List all source files
+3. Set proper compiler flags
+4. Link required libraries
+
+### Example Plugin Makefile.am Structure
+```makefile
+AM_CPPFLAGS = -I$(top_srcdir)/src/libstrongswan -I$(top_srcdir)/src/libcharon
+
+if MONOLITHIC
+noinst_LTLIBRARIES = libstrongswan-extsock.la
+libstrongswan_extsock_la_SOURCES = extsock_plugin.c extsock_plugin.h
+else
+plugin_LTLIBRARIES = libstrongswan-extsock.la
+libstrongswan_extsock_la_SOURCES = extsock_plugin.c extsock_plugin.h
+libstrongswan_extsock_la_LDFLAGS = -module -avoid-version
+endif
+```
+
+### Parent Makefile Integration
+The plugin directory must be added to parent [Makefile.am](mdc:src/libcharon/plugins/Makefile.am):
+```makefile
+SUBDIRS = ... extsock ...
+```
+
+## Configuration System
+
+### Plugin Configuration
+- **Configure Option**: Add `--enable-extsock` option in configure.ac
+- **Conditional Build**: Use AM_CONDITIONAL for optional building
+- **Config Header**: Plugin settings reflected in config.h
+
+### Runtime Configuration
+- **strongswan.conf**: Main configuration file
+- **Plugin Loading**: Plugins loaded via `load = plugin1 plugin2 extsock`
+
+## Build Flags and Dependencies
+
+### Common Compiler Flags
+- `-I$(top_srcdir)/src/libstrongswan` - Core library headers
+- `-I$(top_srcdir)/src/libcharon` - Charon daemon headers
+- `-DHAVE_CONFIG_H` - Enable config.h usage
+
+### Library Dependencies
+- **libstrongswan**: Always required for plugins
+- **libcharon**: Required for charon plugins
+- **External libs**: Link as needed (e.g., -lcjson)
+
+### Test-Specific Requirements
+- **Test Headers**: Include path to check framework
+- **Test Libraries**: Link libcheck, libsubunit
+- **Coverage**: Add --coverage flag for gcov support
+
+## Debugging Build Issues
+
+### Common Problems
+1. **Missing headers**: Check include paths in AM_CPPFLAGS
+2. **Undefined symbols**: Verify library linking in LDFLAGS
+3. **Plugin not loading**: Check plugin list in strongswan.conf
+4. **Config errors**: Ensure config.h is properly included
+
+### Build Debugging Commands
+```bash
+# Verbose build output
+make V=1
+
+# Check configure options
+./configure --help | grep extsock
+
+# Verify plugin compilation
+find . -name "*extsock*" -type f
+
+# Check library dependencies
+ldd src/libcharon/plugins/extsock/.libs/libstrongswan-extsock.so
+```
+
+## Library Paths for Testing
+
+When running tests or debugging, library paths must be set:
+```bash
+export LD_LIBRARY_PATH="src/libstrongswan/.libs:src/libcharon/.libs:$LD_LIBRARY_PATH"
+```
+
+This ensures the test binaries can find the strongSwan libraries during execution.

@@ -1,0 +1,196 @@
+# extsock Plugin Test Suite Makefile
+# Copyright (C) 2024 strongSwan Project
+
+CC = gcc
+CFLAGS = -std=c99 -Wall -Wextra -g -O0 --coverage
+CFLAGS += -I.. -I../../../../../src/libstrongswan -I../../../../../src/libcharon
+CFLAGS += -I/usr/include/cjson -DUNIT_TEST
+CFLAGS += -include ../../../../../config.h
+CFLAGS += -D_GNU_SOURCE -DHAVE_CONFIG_H
+
+LDFLAGS = --coverage -lcheck -lsubunit -lm -lrt -lpthread -lcjson
+LDFLAGS += -L../../../../../src/libstrongswan/.libs -lstrongswan
+LDFLAGS += -L../../../../../src/libcharon/.libs -lcharon
+
+# 소스 파일 디렉토리
+ADAPTER_DIR = ../adapters
+USECASE_DIR = ../usecases
+DOMAIN_DIR = ../domain
+COMMON_DIR = ../common
+
+# 공통 소스 파일들
+COMMON_SRCS = $(COMMON_DIR)/extsock_errors.c
+ADAPTER_SRCS = $(ADAPTER_DIR)/json/extsock_json_parser.c \
+               $(ADAPTER_DIR)/socket/extsock_socket_adapter.c \
+               $(ADAPTER_DIR)/strongswan/extsock_strongswan_adapter.c
+USECASE_SRCS = $(USECASE_DIR)/extsock_config_usecase.c \
+               $(USECASE_DIR)/extsock_event_usecase.c
+DOMAIN_SRCS = $(DOMAIN_DIR)/extsock_config_entity.c
+
+# 모든 구현 소스
+IMPL_SRCS = $(COMMON_SRCS) $(ADAPTER_SRCS) $(USECASE_SRCS) $(DOMAIN_SRCS)
+
+# 테스트 타겟들
+UNIT_TESTS = test_simple test_json_parser test_socket_adapter test_config_usecase test_event_usecase
+INTEGRATION_TESTS = test_full_workflow
+ALL_TESTS = $(UNIT_TESTS) $(INTEGRATION_TESTS)
+
+# 기본 타겟
+all: $(ALL_TESTS)
+
+# 간단한 기본 테스트
+test_simple: test_simple.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+# 단위 테스트들
+test_json_parser: unit/test_json_parser.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(ADAPTER_DIR)/json/extsock_json_parser.c $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_socket_adapter: unit/test_socket_adapter.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(ADAPTER_DIR)/socket/extsock_socket_adapter.c $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_config_usecase: unit/test_config_usecase.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(USECASE_SRCS) $(ADAPTER_SRCS) $(DOMAIN_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_event_usecase: unit/test_event_usecase.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(USECASE_SRCS) $(ADAPTER_SRCS) $(DOMAIN_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+# 통합 테스트들
+test_full_workflow: integration/test_full_workflow.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(IMPL_SRCS) -o $@ $(LDFLAGS)
+
+# 테스트 실행
+run-unit: $(UNIT_TESTS)
+	@echo "=== Running Unit Tests ==="
+	@export LD_LIBRARY_PATH="../../../../../src/libstrongswan/.libs:../../../../../src/libcharon/.libs:$$LD_LIBRARY_PATH"; \
+	for test in $(UNIT_TESTS); do \
+		echo "Running $$test..."; \
+		./$$test; \
+		if [ $$? -ne 0 ]; then \
+			echo "FAILED: $$test"; \
+			exit 1; \
+		else \
+			echo "PASSED: $$test"; \
+		fi; \
+	done
+
+run-integration: $(INTEGRATION_TESTS)
+	@echo "=== Running Integration Tests ==="
+	@export LD_LIBRARY_PATH="../../../../../src/libstrongswan/.libs:../../../../../src/libcharon/.libs:$$LD_LIBRARY_PATH"; \
+	for test in $(INTEGRATION_TESTS); do \
+		echo "Running $$test..."; \
+		./$$test; \
+		if [ $$? -ne 0 ]; then \
+			echo "FAILED: $$test"; \
+			exit 1; \
+		else \
+			echo "PASSED: $$test"; \
+		fi; \
+	done
+
+run-all: run-unit run-integration
+	@echo "=== All Tests Completed Successfully ==="
+
+# 코드 커버리지 생성
+coverage: run-all
+	@echo "=== Generating Coverage Report ==="
+	gcovr -r .. --html --html-details -o coverage_report.html
+	gcovr -r .. --xml -o coverage.xml
+	gcovr -r ..
+	@echo "Coverage report generated: coverage_report.html"
+
+# 메모리 누수 검사 (Valgrind)
+valgrind-unit: $(UNIT_TESTS)
+	@echo "=== Running Unit Tests with Valgrind ==="
+	@for test in $(UNIT_TESTS); do \
+		echo "Valgrind checking $$test..."; \
+		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test; \
+	done
+
+valgrind-integration: $(INTEGRATION_TESTS)
+	@echo "=== Running Integration Tests with Valgrind ==="
+	@for test in $(INTEGRATION_TESTS); do \
+		echo "Valgrind checking $$test..."; \
+		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test; \
+	done
+
+# 성능 테스트
+performance: test_performance
+	@echo "=== Running Performance Tests ==="
+	./test_performance
+
+test_performance: performance/test_performance.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) -O2 $< $(IMPL_SRCS) -o $@ $(LDFLAGS) -lrt
+
+# 정적 분석 (cppcheck)
+static-analysis:
+	@echo "=== Running Static Analysis ==="
+	cppcheck --enable=all --std=c99 --platform=unix64 \
+		--suppress=missingIncludeSystem \
+		--suppress=unusedFunction \
+		--xml --xml-version=2 \
+		$(ADAPTER_DIR) $(USECASE_DIR) $(DOMAIN_DIR) $(COMMON_DIR) \
+		2> static_analysis.xml
+	@echo "Static analysis complete: static_analysis.xml"
+
+# 벤치마크 테스트
+benchmark: test_benchmark
+	@echo "=== Running Benchmark Tests ==="
+	./test_benchmark
+
+test_benchmark: benchmark/test_benchmark.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) -O2 $< $(IMPL_SRCS) -o $@ $(LDFLAGS) -lrt
+
+# 스트레스 테스트  
+stress: test_stress
+	@echo "=== Running Stress Tests ==="
+	./test_stress
+
+test_stress: stress/test_stress.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(IMPL_SRCS) -o $@ $(LDFLAGS)
+
+# CI/CD 파이프라인용 종합 테스트
+ci: clean all run-all coverage static-analysis
+	@echo "=== CI Pipeline Completed ==="
+
+# 디버그 빌드
+debug: CFLAGS += -DDEBUG -ggdb3
+debug: all
+
+# 릴리즈 빌드  
+release: CFLAGS += -DNDEBUG -O2
+release: CFLAGS := $(filter-out --coverage,$(CFLAGS))
+release: LDFLAGS := $(filter-out --coverage,$(LDFLAGS))
+release: all
+
+# 정리
+clean:
+	rm -f $(ALL_TESTS) test_performance test_benchmark test_stress
+	rm -f *.gcda *.gcno *.gcov
+	rm -f coverage_report.html coverage.xml static_analysis.xml
+	rm -f -r coverage_html/
+	find . -name "*.o" -delete
+	find . -name "core" -delete
+
+# 도움말
+help:
+	@echo "Available targets:"
+	@echo "  all              - Build all tests"
+	@echo "  run-unit         - Run unit tests"
+	@echo "  run-integration  - Run integration tests"
+	@echo "  run-all          - Run all tests"
+	@echo "  coverage         - Generate coverage report"
+	@echo "  valgrind-unit    - Run unit tests with Valgrind"
+	@echo "  valgrind-integration - Run integration tests with Valgrind"
+	@echo "  static-analysis  - Run static code analysis"
+	@echo "  performance      - Run performance tests"
+	@echo "  benchmark        - Run benchmark tests"
+	@echo "  stress           - Run stress tests"
+	@echo "  ci               - Run complete CI pipeline"
+	@echo "  debug            - Build debug version"
+	@echo "  release          - Build release version"
+	@echo "  clean            - Clean build artifacts"
+	@echo "  help             - Show this help"
+
+.PHONY: all run-unit run-integration run-all coverage valgrind-unit valgrind-integration
+.PHONY: performance benchmark stress static-analysis ci debug release clean help 

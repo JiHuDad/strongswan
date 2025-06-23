@@ -1,0 +1,222 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Modular Architecture Design Rules
+
+## 1. 모듈화 프로젝트 계획 및 실행
+
+### 원칙
+- **단일 파일 크기 제한**: 메인 파일은 500라인 이하로 유지
+- **계층적 분리**: Clean Architecture 기반 계층 구조 적용
+- **의존성 역전**: 인터페이스를 통한 추상화 구현
+- **점진적 분해**: 큰 모듈을 작은 단위로 단계적 분해
+
+### 체크리스트
+- [ ] 기존 코드의 복잡도 및 라인 수 분석
+- [ ] 책임별 모듈 분리 계획 수립
+- [ ] 인터페이스 정의 및 추상화 설계
+- [ ] 의존성 주입 컨테이너 구현
+- [ ] 각 계층별 모듈 구현 및 테스트
+
+### 실행 방법
+```bash
+# 1. 코드 분석
+wc -l target_file.c
+grep -n "^[a-zA-Z].*(" target_file.c  # 함수 목록
+
+# 2. 모듈 구조 생성
+mkdir -p {interfaces,domain,usecases,adapters,common,test}
+
+# 3. 의존성 그래프 작성
+# 인터페이스 → 도메인 → 유스케이스 → 어댑터 순서로 구현
+```
+
+## 2. 아키텍처 설계 원칙
+
+### Clean Architecture 계층 구조
+```
+Entry Point (main)
+├── Use Cases (비즈니스 로직)
+├── Adapters (외부 시스템 연동)
+├── Domain (핵심 엔티티)
+├── Interfaces (추상화 계층)
+└── Common (공통 유틸리티)
+```
+
+### 의존성 규칙
+- **안쪽 계층은 바깥쪽을 모르도록**: Domain은 Adapters를 직접 참조하지 않음
+- **인터페이스를 통한 소통**: 구체적 구현이 아닌 추상화에 의존
+- **단방향 의존성**: 상위 계층만 하위 계층을 참조
+
+### 설계 패턴 적용
+- **Repository Pattern**: 데이터 액세스 추상화
+- **Publisher-Subscriber**: 이벤트 기반 통신
+- **Command Pattern**: 명령 처리 분리
+- **Factory Pattern**: 객체 생성 책임 분리
+
+## 3. 테스트 중심 개발
+
+### 테스트 계층 구조
+```
+test/
+├── unit/          # 단위 테스트 (각 모듈별)
+├── integration/   # 통합 테스트 (컴포넌트 간)
+├── mocks/         # Mock 객체들
+└── fixtures/      # 테스트 데이터
+```
+
+### 테스트 작성 규칙
+- **각 모듈별 단위 테스트**: 100% 커버리지 목표
+- **Mock을 통한 의존성 분리**: 외부 의존성을 Mock으로 대체
+- **통합 테스트로 워크플로우 검증**: 전체 시나리오 테스트
+- **자동화된 테스트 실행**: Makefile을 통한 원클릭 실행
+
+### 테스트 자동화
+```makefile
+# test/Makefile.tests 참조
+run-all: run-unit run-integration
+coverage: run-all && gcovr --html-details coverage.html
+valgrind: valgrind-unit valgrind-integration
+static-analysis: cppcheck --enable=all src/
+```
+
+## 4. 문서화 및 지식 관리
+
+### 필수 문서
+- **API_REFERENCE.md**: 모든 공개 인터페이스 문서화
+- **ARCHITECTURE_GUIDE.md**: 설계 결정사항 및 구조 설명
+- **REFACTORING_PLAN.md**: 리팩토링 계획 및 진행상황
+- **COMPLETION_FINAL.md**: 프로젝트 완료 보고서
+
+### 문서 작성 규칙
+- **코드와 문서 동기화**: 코드 변경 시 문서도 함께 업데이트
+- **예제 코드 포함**: 실제 사용 방법을 보여주는 코드 예제
+- **다이어그램 활용**: 아키텍처 및 플로우를 시각적으로 표현
+- **변경 이력 추적**: 주요 변경사항과 결정 배경 기록
+
+## 5. 에러 처리 및 로깅 시스템
+
+### 계층적 에러 처리
+```c
+// common/extsock_errors.h 참조
+typedef enum {
+    EXTSOCK_ERROR_MEMORY_100 = 100,    // 메모리 관련
+    EXTSOCK_ERROR_CONFIG_200 = 200,    // 설정 관련
+    EXTSOCK_ERROR_JSON_300 = 300,      // JSON 파싱
+    EXTSOCK_ERROR_STRONGSWAN_400 = 400, // strongSwan API
+    EXTSOCK_ERROR_NETWORK_500 = 500,   // 네트워크
+} extsock_error_code_t;
+```
+
+### 로깅 시스템
+- **구조화된 로깅**: JSON 형태로 로그 출력
+- **레벨별 로깅**: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+- **컴포넌트별 로깅**: 각 모듈별 전용 로깅 매크로
+- **성능 추적**: 함수 진입/종료 및 실행 시간 측정
+
+### 매크로 기반 처리
+```c
+#define EXTSOCK_CHECK_AND_HANDLE(condition, error_code, message) \
+    if (!(condition)) { \
+        EXTSOCK_LOG_ERROR(message); \
+        return extsock_error_create(error_code, __FILE__, __LINE__, __func__, message); \
+    }
+```
+
+## 6. 성능 및 확장성
+
+### 성능 최적화
+- **메모리 풀 사용**: 빈번한 할당/해제 최소화
+- **비동기 처리**: 논블로킹 I/O 및 이벤트 기반 처리
+- **캐싱 전략**: 자주 사용되는 데이터 캐싱
+- **성능 프로파일링**: 정기적인 성능 측정 및 최적화
+
+### 확장성 설계
+- **플러그인 아키텍처**: 새로운 기능을 플러그인 형태로 추가
+- **설정 기반 확장**: 코드 변경 없이 설정으로 기능 제어
+- **인터페이스 확장**: 새로운 프로토콜이나 어댑터 쉽게 추가
+- **수평적 확장**: 멀티 인스턴스 지원
+
+## 7. 개발 워크플로우
+
+### 개발 프로세스
+1. **요구사항 분석** → 아키텍처 설계
+2. **인터페이스 정의** → 테스트 작성
+3. **구현** → 테스트 실행
+4. **통합** → 문서화
+5. **리뷰** → 배포
+
+### Git 브랜치 전략
+```bash
+main                    # 안정 버전
+├── develop            # 개발 중인 기능들
+├── feature/module-x   # 특정 모듈 개발
+└── hotfix/bug-fix     # 긴급 수정
+```
+
+### 코드 리뷰 체크리스트
+- [ ] 아키텍처 원칙 준수
+- [ ] 테스트 커버리지 95% 이상
+- [ ] 문서 업데이트 완료
+- [ ] 성능 영향 검토
+- [ ] 보안 검토 완료
+
+## 8. 프로젝트 관리 및 추적
+
+### 진행상황 추적
+- **REFACTORING_PROGRESS.md**: 단계별 진행상황 기록
+- **마일스톤 설정**: 각 계층별 완료 목표 설정
+- **메트릭 추적**: 라인 수, 테스트 커버리지, 성능 지표
+
+### 품질 메트릭
+| 지표 | 목표 | 측정 방법 |
+|------|------|-----------|
+| 파일 크기 | 500라인 이하 | `wc -l *.c` |
+| 테스트 커버리지 | 95% 이상 | `gcovr` |
+| 순환 복잡도 | 10 이하 | `cppcheck` |
+| 메모리 누수 | 0건 | `valgrind` |
+
+## 9. 지속적 개선
+
+### 정기적 리팩토링
+- **월간 코드 리뷰**: 아키텍처 준수도 점검
+- **성능 프로파일링**: 분기별 성능 측정 및 최적화
+- **기술 부채 관리**: 기술 부채 식별 및 해결 계획
+- **도구 및 프로세스 개선**: 개발 효율성 향상 방안 모색
+
+### 학습 및 공유
+- **아키텍처 결정 기록**: ADR(Architecture Decision Record) 작성
+- **베스트 프랙티스 공유**: 팀 내 노하우 공유
+- **외부 사례 연구**: 다른 프로젝트 사례 분석 및 적용
+
+## 10. 안티 패턴 및 주의사항
+
+### 피해야 할 패턴
+- **God Object**: 너무 많은 책임을 가진 클래스/모듈
+- **Spaghetti Code**: 복잡하게 얽힌 의존성
+- **Copy-Paste Programming**: 코드 중복
+- **Shotgun Surgery**: 한 기능 변경을 위해 여러 곳 수정
+
+### 코드 품질 가이드라인
+- **함수 크기**: 한 함수는 50라인 이하
+- **매개변수 수**: 5개 이하로 제한
+- **중첩 깊이**: 3단계 이하로 제한
+- **네이밍**: 의도를 명확히 드러내는 이름 사용
+
+### 보안 고려사항
+- **입력 검증**: 모든 외부 입력에 대한 검증
+- **권한 검사**: 각 작업에 대한 권한 확인
+- **데이터 무결성**: 중요 데이터에 대한 체크섬 검증
+- **로그 보안**: 민감한 정보 로깅 금지
+
+---
+
+## 참고 파일
+- [extsock_plugin.c](mdc:src/libcharon/plugins/extsock/extsock_plugin.c) - 메인 엔트리 포인트
+- [API_REFERENCE.md](mdc:src/libcharon/plugins/extsock/docs/API_REFERENCE.md) - API 문서
+- [ARCHITECTURE_GUIDE.md](mdc:src/libcharon/plugins/extsock/docs/ARCHITECTURE_GUIDE.md) - 아키텍처 가이드
+- [test/Makefile.tests](mdc:src/libcharon/plugins/extsock/test/Makefile.tests) - 테스트 자동화
+- [common/extsock_errors.h](mdc:src/libcharon/plugins/extsock/common/extsock_errors.h) - 에러 시스템
+- [common/extsock_logging.h](mdc:src/libcharon/plugins/extsock/common/extsock_logging.h) - 로깅 시스템
