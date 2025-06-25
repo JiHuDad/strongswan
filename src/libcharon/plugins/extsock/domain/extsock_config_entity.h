@@ -53,7 +53,7 @@ struct extsock_config_entity_t {
      * @param this      인스턴스
      * @return          복제된 설정 엔티티
      */
-    extsock_config_entity_t* (*clone)(extsock_config_entity_t *this);
+    extsock_config_entity_t* (*clone_)(extsock_config_entity_t *this);
     
     /**
      * 인스턴스 소멸

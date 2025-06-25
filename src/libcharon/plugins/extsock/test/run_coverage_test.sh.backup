@@ -19,9 +19,9 @@ SOURCE_DIR=".."
 
 # 컴파일 설정 (커버리지 플래그 추가)
 CC="gcc"
-CFLAGS="-std=gnu99 -Wall -g --coverage -fprofile-arcs -ftest-coverage -include ../../../../../config.h -D_GNU_SOURCE -DHAVE_CONFIG_H -fgnu89-inline -Wno-unused-function -D__USE_GNU"
+CFLAGS="-std=c99 -Wall -Wextra -g --coverage -fprofile-arcs -ftest-coverage -include ../../../../../config.h -D_GNU_SOURCE -DHAVE_CONFIG_H"
 INCLUDES="-I.. -I../../../../../src/libstrongswan -I../../../../../src/libcharon -I/usr/include/cjson -DUNIT_TEST"
-LIBS="-L../../../../../src/libstrongswan/.libs -L../../../../../src/libcharon/.libs -lstrongswan -lcharon -lcheck -lsubunit -lm -lrt -lpthread -lcjson -lgcov"
+LIBS="-lcheck -lsubunit -lm -lrt -lpthread -lcjson -lgcov"
 COMMON_SRC="../common/extsock_errors.c"
 
 # 라이브러리 경로 설정
@@ -34,7 +34,7 @@ declare -A COVERAGE_TESTS=(
     ["json_parser_real"]="unit/test_json_parser_real.c:../common/extsock_errors.c:../adapters/json/extsock_json_parser.c"
     ["socket_adapter_simple"]="unit/test_socket_adapter_simple.c:../common/extsock_errors.c"
     ["socket_adapter_real"]="unit/test_socket_adapter_real.c:../common/extsock_errors.c:../adapters/socket/extsock_socket_adapter.c"
-    ["config_usecase_real"]="unit/test_config_usecase_real.c:../common/extsock_errors.c:../usecases/extsock_config_usecase.c:../adapters/strongswan/extsock_strongswan_adapter.c"
+    ["config_usecase_real"]="unit/test_config_usecase_real.c:../common/extsock_errors.c:../usecases/extsock_config_usecase.c"
     ["event_usecase_real"]="unit/test_event_usecase_real.c:../common/extsock_errors.c:../usecases/extsock_event_usecase.c"
     ["domain_entity_real"]="unit/test_domain_entity_real.c:../common/extsock_errors.c:../domain/extsock_config_entity.c"
 )

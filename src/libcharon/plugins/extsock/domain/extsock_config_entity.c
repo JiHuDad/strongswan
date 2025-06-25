@@ -149,7 +149,7 @@ METHOD(extsock_config_entity_t, to_peer_cfg, peer_cfg_t *,
     return NULL;
 }
 
-METHOD(extsock_config_entity_t, clone, extsock_config_entity_t *,
+METHOD(extsock_config_entity_t, clone_, extsock_config_entity_t *,
     private_extsock_config_entity_t *this)
 {
     // 간단한 클론 구현 - 이름만 복사

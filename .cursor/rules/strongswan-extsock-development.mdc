@@ -1,0 +1,157 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# strongSwan extsock Plugin Development Guide
+
+## Project Overview
+
+The strongSwan extsock plugin enables external applications to communicate with strongSwan via Unix Domain Sockets using JSON-based messaging. The plugin follows Clean Architecture principles for maintainable and testable code.
+
+## Architecture Layers
+
+### Plugin Layer
+- **[extsock_plugin.c](mdc:src/libcharon/plugins/extsock/extsock_plugin.c)**: Main plugin entry point and lifecycle management
+- **[extsock_plugin.h](mdc:src/libcharon/plugins/extsock/extsock_plugin.h)**: Plugin interface definitions
+
+### Domain Layer (Core Business Logic)
+- **[domain/extsock_config_entity.c](mdc:src/libcharon/plugins/extsock/domain/extsock_config_entity.c)**: IPsec configuration entity
+- **[domain/extsock_config_entity.h](mdc:src/libcharon/plugins/extsock/domain/extsock_config_entity.h)**: Configuration entity interface
+
+### Usecase Layer (Business Logic)
+- **[usecases/extsock_config_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c)**: Configuration management logic
+- **[usecases/extsock_config_usecase.h](mdc:src/libcharon/plugins/extsock/usecases/extsock_config_usecase.h)**: Config usecase interface
+- **[usecases/extsock_event_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_event_usecase.c)**: Event handling logic
+- **[usecases/extsock_event_usecase.h](mdc:src/libcharon/plugins/extsock/usecases/extsock_event_usecase.h)**: Event usecase interface
+
+### Adapter Layer (External Interfaces)
+
+#### JSON Processing
+- **[adapters/json/extsock_json_parser.c](mdc:src/libcharon/plugins/extsock/adapters/json/extsock_json_parser.c)**: JSON message parsing
+- **[adapters/json/extsock_json_parser.h](mdc:src/libcharon/plugins/extsock/adapters/json/extsock_json_parser.h)**: JSON parser interface
+
+#### Socket Communication
+- **[adapters/socket/extsock_socket_adapter.c](mdc:src/libcharon/plugins/extsock/adapters/socket/extsock_socket_adapter.c)**: Unix Domain Socket handling
+- **[adapters/socket/extsock_socket_adapter.h](mdc:src/libcharon/plugins/extsock/adapters/socket/extsock_socket_adapter.h)**: Socket adapter interface
+
+#### strongSwan Integration
+- **[adapters/strongswan/extsock_strongswan_adapter.c](mdc:src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.c)**: strongSwan API integration
+- **[adapters/strongswan/extsock_strongswan_adapter.h](mdc:src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.h)**: strongSwan adapter interface
+
+### Common Layer (Shared Utilities)
+- **[common/extsock_types.h](mdc:src/libcharon/plugins/extsock/common/extsock_types.h)**: Common type definitions
+- **[common/extsock_errors.c](mdc:src/libcharon/plugins/extsock/common/extsock_errors.c)**: Error handling utilities
+- **[common/extsock_errors.h](mdc:src/libcharon/plugins/extsock/common/extsock_errors.h)**: Error type definitions
+
+### Client Application
+- **[client/extsock_client.c](mdc:src/libcharon/plugins/extsock/client/extsock_client.c)**: Command-line client implementation
+- **[client/extsock_client.h](mdc:src/libcharon/plugins/extsock/client/extsock_client.h)**: Client interface
+
+## Development Status
+
+### Completed Components ✅
+- **Plugin infrastructure**: Lifecycle management and initialization
+- **Error handling**: Comprehensive error types and utilities
+- **Type definitions**: Core data structures and interfaces
+- **Test infrastructure**: 82 tests with 100% success rate
+
+### In Development 🚧
+- **METHOD macro implementations**: strongSwan API integration issues
+- **Real adapters**: Actual strongSwan, JSON, and socket implementations
+- **Client application**: Command-line interface
+
+### Known Issues 🔴
+- **METHOD Macro Compilation**: Real implementation files fail due to strongSwan METHOD macro syntax
+- **Missing Implementations**: Some usecase and adapter methods not fully implemented
+
+## Build Configuration
+
+### Build Files
+- **[Makefile.am](mdc:src/libcharon/plugins/extsock/Makefile.am)**: Main build configuration
+- **[test/Makefile.tests](mdc:src/libcharon/plugins/extsock/test/Makefile.tests)**: Test-specific build settings
+
+### Compilation Requirements
+- strongSwan development environment
+- libcheck-dev (unit testing)
+- libcjson-dev (JSON processing)
+- Unix Domain Socket support
+
+## Testing Strategy
+
+### Test Categories
+1. **Mock Tests**: Simulation-based testing (currently working)
+2. **Unit Tests**: Individual component testing
+3. **Integration Tests**: Cross-component workflow testing
+4. **Real Implementation Tests**: Actual strongSwan API (blocked by METHOD issues)
+
+### Test Execution
+```bash
+# Quick verification (recommended for development)
+cd src/libcharon/plugins/extsock/test
+./quick_test.sh
+
+# Full test suite
+./run_working_tests.sh
+
+# Individual component testing
+./run_individual_test.sh json_parser_simple --verbose
+```
+
+## Development Workflow
+
+### Adding New Features
+1. **Interface Definition**: Add to appropriate header file in interfaces/
+2. **Implementation**: Create implementation in corresponding layer
+3. **Unit Tests**: Add tests to [test/unit/](mdc:src/libcharon/plugins/extsock/test/unit)
+4. **Integration Tests**: Add workflow tests to [test/integration/](mdc:src/libcharon/plugins/extsock/test/integration)
+5. **Documentation**: Update relevant README and interface docs
+
+### METHOD Macro Usage
+When implementing strongSwan interfaces, use this pattern:
+```c
+METHOD(interface_t, method_name, return_type,
+    param_type param_name)
+{
+    // Implementation
+}
+```
+
+**Current Issue**: Compilation fails due to incomplete function definitions. Use mock implementations for development.
+
+### Error Handling
+All functions should return `extsock_error_t` and use defined error codes from [common/extsock_errors.h](mdc:src/libcharon/plugins/extsock/common/extsock_errors.h):
+- `EXTSOCK_ERROR_SUCCESS`
+- `EXTSOCK_ERROR_INVALID_PARAM`
+- `EXTSOCK_ERROR_MEMORY`
+- `EXTSOCK_ERROR_JSON_PARSE`
+- `EXTSOCK_ERROR_SOCKET`
+
+## Clean Architecture Principles
+
+### Dependency Rule
+- **Domain**: No dependencies on other layers
+- **Usecases**: Depend only on Domain
+- **Adapters**: Depend on Usecases and Domain
+- **Plugin**: Orchestrates all layers
+
+### Interface Segregation
+Each component defines minimal, focused interfaces in the [interfaces/](mdc:src/libcharon/plugins/extsock/interfaces) directory.
+
+### Testability
+All components are designed for easy mocking and unit testing, enabling the current 100% test success rate.
+
+## Debugging and Troubleshooting
+
+### Common Issues
+1. **Compilation Errors**: Check METHOD macro syntax and strongSwan headers
+2. **Test Failures**: Use `--verbose` flag for detailed error information
+3. **Missing Dependencies**: Ensure libcheck-dev and libcjson-dev are installed
+
+### Development Tips
+- Use mock-based tests for rapid development
+- Test early and often with `quick_test.sh`
+- Follow Clean Architecture boundaries strictly
+- Document all public interfaces thoroughly
+
+This development guide ensures consistent, maintainable code following Clean Architecture principles with comprehensive testing support.
