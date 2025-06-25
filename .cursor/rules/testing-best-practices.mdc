@@ -203,3 +203,4 @@ END_TEST
 - Use `CK_FORK=no` environment variable to disable forking for easier debugging
 - Run with `--verbose` for detailed test output
 - Check return codes: 0 = success, non-zero = failure
+

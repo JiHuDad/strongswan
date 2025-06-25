@@ -31,8 +31,8 @@ DOMAIN_SRCS = $(DOMAIN_DIR)/extsock_config_entity.c
 IMPL_SRCS = $(COMMON_SRCS) $(ADAPTER_SRCS) $(USECASE_SRCS) $(DOMAIN_SRCS)
 
 # 테스트 타겟들
-UNIT_TESTS = test_simple test_json_parser test_socket_adapter test_config_usecase test_event_usecase
-INTEGRATION_TESTS = test_full_workflow
+UNIT_TESTS = test_simple test_json_parser test_socket_adapter test_config_usecase test_event_usecase test_config_entity test_plugin_lifecycle test_error_scenarios test_simple_unit test_json_parser_simple test_socket_adapter_simple test_plugin_simple test_json_parser_real test_socket_adapter_real test_config_usecase_real test_event_usecase_real test_domain_entity_real
+INTEGRATION_TESTS = test_full_workflow test_complete_workflow
 ALL_TESTS = $(UNIT_TESTS) $(INTEGRATION_TESTS)
 
 # 기본 타겟
@@ -55,9 +55,48 @@ test_config_usecase: unit/test_config_usecase.c $(IMPL_SRCS)
 test_event_usecase: unit/test_event_usecase.c $(IMPL_SRCS)
 	$(CC) $(CFLAGS) $< $(USECASE_SRCS) $(ADAPTER_SRCS) $(DOMAIN_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
 
+test_config_entity: unit/test_config_entity.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(DOMAIN_SRCS) $(ADAPTER_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_plugin_lifecycle: unit/test_plugin_lifecycle.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< ../extsock_plugin.c $(USECASE_SRCS) $(ADAPTER_SRCS) $(DOMAIN_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_error_scenarios: unit/test_error_scenarios.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(USECASE_SRCS) $(ADAPTER_SRCS) $(DOMAIN_SRCS) $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_simple_unit: unit/test_simple_unit.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_json_parser_simple: unit/test_json_parser_simple.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_socket_adapter_simple: unit/test_socket_adapter_simple.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_plugin_simple: unit/test_plugin_simple.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_json_parser_real: unit/test_json_parser_real.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_socket_adapter_real: unit/test_socket_adapter_real.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_config_usecase_real: unit/test_config_usecase_real.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_event_usecase_real: unit/test_event_usecase_real.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_domain_entity_real: unit/test_domain_entity_real.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
 # 통합 테스트들
 test_full_workflow: integration/test_full_workflow.c $(IMPL_SRCS)
 	$(CC) $(CFLAGS) $< $(IMPL_SRCS) -o $@ $(LDFLAGS)
+
+test_complete_workflow: integration/test_complete_workflow.c $(COMMON_SRCS)
+	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
 
 # 테스트 실행
 run-unit: $(UNIT_TESTS)

@@ -170,13 +170,13 @@ METHOD(extsock_strongswan_adapter_t, initiate_child_sa, extsock_error_t,
     return EXTSOCK_SUCCESS;
 }
 
-METHOD(extsock_strongswan_adapter_t, get_managed_configs, linked_list_t*,
+METHOD(extsock_strongswan_adapter_t, get_managed_configs, linked_list_t *,
     private_extsock_strongswan_adapter_t *this)
 {
     return this->managed_peer_cfgs;
 }
 
-METHOD(extsock_strongswan_adapter_t, get_credentials, mem_cred_t*,
+METHOD(extsock_strongswan_adapter_t, get_credentials, mem_cred_t *,
     private_extsock_strongswan_adapter_t *this)
 {
     return this->creds;

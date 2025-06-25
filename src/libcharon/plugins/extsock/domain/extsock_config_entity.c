@@ -57,7 +57,7 @@ struct private_extsock_config_entity_t {
     linked_list_t *remote_auths;
 };
 
-METHOD(extsock_config_entity_t, get_name, const char*,
+METHOD(extsock_config_entity_t, get_name, const char *,
     private_extsock_config_entity_t *this)
 {
     return this->name;
@@ -98,7 +98,7 @@ METHOD(extsock_config_entity_t, validate, bool,
     return TRUE;
 }
 
-METHOD(extsock_config_entity_t, to_peer_cfg, peer_cfg_t*,
+METHOD(extsock_config_entity_t, to_peer_cfg, peer_cfg_t *,
     private_extsock_config_entity_t *this)
 {
     // 유효성 검증 먼저 수행
@@ -149,7 +149,7 @@ METHOD(extsock_config_entity_t, to_peer_cfg, peer_cfg_t*,
     return NULL;
 }
 
-METHOD(extsock_config_entity_t, clone, extsock_config_entity_t*,
+METHOD(extsock_config_entity_t, clone, extsock_config_entity_t *,
     private_extsock_config_entity_t *this)
 {
     // 간단한 클론 구현 - 이름만 복사

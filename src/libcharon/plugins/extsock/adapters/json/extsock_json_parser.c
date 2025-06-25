@@ -93,7 +93,7 @@ static action_t string_to_action(const char* action_str)
     return ACTION_NONE;
 }
 
-METHOD(extsock_json_parser_t, parse_proposals, linked_list_t*,
+METHOD(extsock_json_parser_t, parse_proposals, linked_list_t *,
     private_extsock_json_parser_t *this, cJSON *json_array, protocol_id_t proto, bool is_ike)
 {
     linked_list_t *proposals_list = linked_list_create();
@@ -131,7 +131,7 @@ METHOD(extsock_json_parser_t, parse_proposals, linked_list_t*,
     return proposals_list;
 }
 
-METHOD(extsock_json_parser_t, parse_traffic_selectors, linked_list_t*,
+METHOD(extsock_json_parser_t, parse_traffic_selectors, linked_list_t *,
     private_extsock_json_parser_t *this, cJSON *json_array)
 {
     linked_list_t *ts_list = linked_list_create();
@@ -160,7 +160,7 @@ METHOD(extsock_json_parser_t, parse_traffic_selectors, linked_list_t*,
     return ts_list;
 }
 
-METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t*,
+METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
     private_extsock_json_parser_t *this, cJSON *ike_json)
 {
     if (!ike_json) return NULL;
@@ -206,7 +206,7 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t*,
     return ike_cfg;
 }
 
-METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t*,
+METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
     private_extsock_json_parser_t *this, cJSON *auth_json, bool is_local)
 {
     if (!auth_json) return NULL;
@@ -349,7 +349,7 @@ METHOD(extsock_json_parser_t, parse_child_configs, bool,
     return TRUE;
 }
 
-METHOD(extsock_json_parser_t, parse_config_entity, extsock_config_entity_t*,
+METHOD(extsock_json_parser_t, parse_config_entity, extsock_config_entity_t *,
     private_extsock_json_parser_t *this, const char *config_json)
 {
     // 이 메서드는 domain layer 구현 후 완성됩니다

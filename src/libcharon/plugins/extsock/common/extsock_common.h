@@ -16,6 +16,7 @@
 #define EXTSOCK_COMMON_H_
 
 #include <utils/debug.h>
+#include <utils/utils/object.h>
 #include "extsock_types.h"
 
 // 소켓 경로 상수

@@ -144,7 +144,7 @@ METHOD(listener_t, child_updown, bool,
     return TRUE;
 }
 
-METHOD(extsock_event_usecase_t, get_event_publisher, extsock_event_publisher_t*,
+METHOD(extsock_event_usecase_t, get_event_publisher, extsock_event_publisher_t *,
     private_extsock_event_usecase_t *this)
 {
     return &this->event_publisher;

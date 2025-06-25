@@ -209,7 +209,7 @@ METHOD(extsock_command_handler_t, destroy_handler, void,
     // 명령 처리기는 유스케이스의 일부이므로 별도 해제 불필요
 }
 
-METHOD(extsock_config_usecase_t, get_command_handler, extsock_command_handler_t*,
+METHOD(extsock_config_usecase_t, get_command_handler, extsock_command_handler_t *,
     private_extsock_config_usecase_t *this)
 {
     return &this->command_handler;

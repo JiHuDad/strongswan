@@ -171,7 +171,7 @@ METHOD(extsock_socket_adapter_t, send_event, extsock_error_t,
     return this->public.event_publisher.publish_event(&this->public.event_publisher, event_json);
 }
 
-METHOD(extsock_socket_adapter_t, start_listening, thread_t*,
+METHOD(extsock_socket_adapter_t, start_listening, thread_t *,
     private_extsock_socket_adapter_t *this)
 {
     return thread_create(socket_thread_function, this);
