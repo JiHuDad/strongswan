@@ -29,6 +29,12 @@ export LD_LIBRARY_PATH="../../../../../src/libstrongswan/.libs:../../../../../sr
 
 # 테스트 목록 (실제 소스 코드를 포함하는 테스트들만)
 declare -A COVERAGE_TESTS=(
+    ["minimal_real"]="unit/test_minimal_real.c"
+    ["source_inclusion"]="unit/test_source_inclusion.c"
+    ["linked_source"]="unit/test_linked_source.c:unit/standalone_extsock_errors.c"
+    ["json_parser_standalone"]="unit/test_json_parser_standalone.c"
+    ["socket_adapter_standalone"]="unit/test_socket_adapter_standalone.c"
+    ["actual_functions"]="unit/test_actual_functions.c:../common/extsock_errors.c:../adapters/json/extsock_json_parser.c:../extsock_plugin.c"
     ["simple_unit"]="unit/test_simple_unit.c:../common/extsock_errors.c"
     ["json_parser_simple"]="unit/test_json_parser_simple.c:../common/extsock_errors.c"
     ["json_parser_real"]="unit/test_json_parser_real.c:../common/extsock_errors.c:../adapters/json/extsock_json_parser.c"

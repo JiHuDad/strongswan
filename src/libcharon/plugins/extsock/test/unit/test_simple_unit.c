@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2024 strongSwan Project
- * Simple Unit Test for ExternalSocket Plugin
+ * Simple Unit Test for ExternalSocket Plugin - Real Implementation Test
  */
 
 #include <check.h>
@@ -10,8 +10,148 @@
 #include <cjson/cJSON.h>
 #include <library.h>
 
+// 실제 extsock 에러 처리 함수들 포함
+#include "../common/extsock_errors.h"
+
 /**
- * JSON 파싱 기본 테스트
+ * 실제 extsock 에러 생성 함수 테스트
+ */
+START_TEST(test_extsock_error_create)
+{
+    // Given & When
+    extsock_error_info_t *error1 = extsock_error_create(EXTSOCK_ERROR_JSON_PARSE, "JSON parse error");
+    extsock_error_info_t *error2 = extsock_error_create(EXTSOCK_ERROR_SOCKET_FAILED, "Socket error occurred");
+    extsock_error_info_t *error3 = extsock_error_create(EXTSOCK_ERROR_CONFIG_INVALID, NULL);
+    
+    // Then
+    ck_assert_ptr_nonnull(error1);
+    ck_assert_int_eq(error1->code, EXTSOCK_ERROR_JSON_PARSE);
+    ck_assert_ptr_nonnull(error1->message);
+    ck_assert_str_eq(error1->message, "JSON parse error");
+    
+    ck_assert_ptr_nonnull(error2);
+    ck_assert_int_eq(error2->code, EXTSOCK_ERROR_SOCKET_FAILED);
+    ck_assert_ptr_nonnull(error2->message);
+    ck_assert_str_eq(error2->message, "Socket error occurred");
+    
+    ck_assert_ptr_nonnull(error3);
+    ck_assert_int_eq(error3->code, EXTSOCK_ERROR_CONFIG_INVALID);
+    ck_assert_ptr_null(error3->message);
+    
+    // Cleanup
+    extsock_error_destroy(error1);
+    extsock_error_destroy(error2);
+    extsock_error_destroy(error3);
+}
+END_TEST
+
+/**
+ * 실제 extsock 에러 해제 함수 테스트
+ */
+START_TEST(test_extsock_error_destroy)
+{
+    // Given
+    extsock_error_info_t *error = extsock_error_create(EXTSOCK_ERROR_CONFIG_INVALID, "Test message");
+    ck_assert_ptr_nonnull(error);
+    
+    // When & Then - 크래시되지 않으면 성공
+    extsock_error_destroy(error);
+    
+    // NULL 포인터로 호출해도 크래시되지 않는지 테스트
+    extsock_error_destroy(NULL);
+}
+END_TEST
+
+/**
+ * 다양한 에러 코드로 에러 생성 테스트
+ */
+START_TEST(test_extsock_error_various_codes)
+{
+    // Given & When
+    extsock_error_info_t *errors[5];
+    errors[0] = extsock_error_create(EXTSOCK_ERROR_JSON_PARSE, "JSON parse issue");
+    errors[1] = extsock_error_create(EXTSOCK_ERROR_CONFIG_INVALID, "Config issue");
+    errors[2] = extsock_error_create(EXTSOCK_ERROR_SOCKET_FAILED, "Socket issue");
+    errors[3] = extsock_error_create(EXTSOCK_ERROR_MEMORY_ALLOCATION, "Memory issue");
+    errors[4] = extsock_error_create(EXTSOCK_ERROR_STRONGSWAN_API, "strongSwan API issue");
+    
+    // Then
+    for (int i = 0; i < 5; i++) {
+        ck_assert_ptr_nonnull(errors[i]);
+        ck_assert_ptr_nonnull(errors[i]->message);
+    }
+    
+    ck_assert_int_eq(errors[0]->code, EXTSOCK_ERROR_JSON_PARSE);
+    ck_assert_int_eq(errors[1]->code, EXTSOCK_ERROR_CONFIG_INVALID);
+    ck_assert_int_eq(errors[2]->code, EXTSOCK_ERROR_SOCKET_FAILED);
+    ck_assert_int_eq(errors[3]->code, EXTSOCK_ERROR_MEMORY_ALLOCATION);
+    ck_assert_int_eq(errors[4]->code, EXTSOCK_ERROR_STRONGSWAN_API);
+    
+    // Cleanup
+    for (int i = 0; i < 5; i++) {
+        extsock_error_destroy(errors[i]);
+    }
+}
+END_TEST
+
+/**
+ * 긴 에러 메시지 처리 테스트
+ */
+START_TEST(test_extsock_error_long_message)
+{
+    // Given
+    char long_message[1000];
+    for (int i = 0; i < 999; i++) {
+        long_message[i] = 'A' + (i % 26);
+    }
+    long_message[999] = '\0';
+    
+    // When
+    extsock_error_info_t *error = extsock_error_create(EXTSOCK_ERROR_MEMORY_ALLOCATION, long_message);
+    
+    // Then
+    ck_assert_ptr_nonnull(error);
+    ck_assert_int_eq(error->code, EXTSOCK_ERROR_MEMORY_ALLOCATION);
+    ck_assert_ptr_nonnull(error->message);
+    ck_assert_str_eq(error->message, long_message);
+    
+    // Cleanup
+    extsock_error_destroy(error);
+}
+END_TEST
+
+/**
+ * 메모리 할당 실패 시뮬레이션 테스트 (정상 환경에서는 성공)
+ */
+START_TEST(test_extsock_error_memory_conditions)
+{
+    // Given & When - 여러 에러를 동시에 생성
+    extsock_error_info_t *errors[100];
+    int created_count = 0;
+    
+    for (int i = 0; i < 100; i++) {
+        char message[50];
+        snprintf(message, sizeof(message), "Error message %d", i);
+        errors[i] = extsock_error_create(EXTSOCK_ERROR_JSON_PARSE, message);
+        if (errors[i]) {
+            created_count++;
+        }
+    }
+    
+    // Then - 정상 환경에서는 모두 성공해야 함
+    ck_assert_int_eq(created_count, 100);
+    
+    // Cleanup
+    for (int i = 0; i < 100; i++) {
+        if (errors[i]) {
+            extsock_error_destroy(errors[i]);
+        }
+    }
+}
+END_TEST
+
+/**
+ * JSON 파싱 기본 테스트 (기존 테스트 유지)
  */
 START_TEST(test_json_parsing_basic)
 {
@@ -34,177 +174,89 @@ START_TEST(test_json_parsing_basic)
     ck_assert(cJSON_IsNumber(value));
     ck_assert_int_eq(cJSON_GetNumberValue(value), 123);
     
+    // Cleanup
     cJSON_Delete(json);
 }
 END_TEST
 
 /**
- * JSON 유효성 검증 테스트
+ * JSON 생성 테스트
  */
-START_TEST(test_json_validation)
+START_TEST(test_json_creation_basic)
 {
-    // Given - 유효한 JSON
-    const char *valid_json = "{\"key\":\"value\"}";
-    cJSON *json = cJSON_Parse(valid_json);
+    // Given & When
+    cJSON *json = cJSON_CreateObject();
     ck_assert_ptr_nonnull(json);
+    
+    cJSON_AddStringToObject(json, "type", "test");
+    cJSON_AddNumberToObject(json, "id", 42);
+    
+    char *json_string = cJSON_Print(json);
+    ck_assert_ptr_nonnull(json_string);
+    
+    // Then
+    ck_assert(strstr(json_string, "test") != NULL);
+    ck_assert(strstr(json_string, "42") != NULL);
+    
+    // Cleanup
+    free(json_string);
     cJSON_Delete(json);
-    
-    // Given - 잘못된 JSON
-    const char *invalid_json = "{key:value}";
-    json = cJSON_Parse(invalid_json);
-    ck_assert_ptr_null(json);
 }
 END_TEST
 
 /**
- * 문자열 처리 테스트
+ * 메모리 할당 테스트
  */
-START_TEST(test_string_operations)
+START_TEST(test_memory_allocation)
 {
-    // Given
-    const char *source = "test-connection";
-    
-    // When
-    char *copy = strdup(source);
-    
-    // Then
-    ck_assert_ptr_nonnull(copy);
-    ck_assert_str_eq(copy, source);
-    ck_assert_int_eq(strlen(copy), strlen(source));
-    
-    free(copy);
-}
-END_TEST
-
-/**
- * 배열 처리 테스트
- */
-START_TEST(test_array_operations)
-{
-    // Given
-    cJSON *array = cJSON_CreateArray();
-    ck_assert_ptr_nonnull(array);
-    
-    // When
-    cJSON_AddItemToArray(array, cJSON_CreateString("item1"));
-    cJSON_AddItemToArray(array, cJSON_CreateString("item2"));
-    cJSON_AddItemToArray(array, cJSON_CreateString("item3"));
-    
-    // Then
-    ck_assert_int_eq(cJSON_GetArraySize(array), 3);
-    
-    cJSON *first = cJSON_GetArrayItem(array, 0);
-    ck_assert_ptr_nonnull(first);
-    ck_assert_str_eq(cJSON_GetStringValue(first), "item1");
-    
-    cJSON_Delete(array);
-}
-END_TEST
-
-/**
- * 메모리 관리 테스트
- */
-START_TEST(test_memory_management)
-{
-    // Given
+    // Given & When
     void *ptr1 = malloc(100);
-    void *ptr2 = malloc(200);
+    void *ptr2 = malloc(1000);
+    void *ptr3 = malloc(10000);
     
     // Then
     ck_assert_ptr_nonnull(ptr1);
     ck_assert_ptr_nonnull(ptr2);
-    ck_assert_ptr_ne(ptr1, ptr2);
+    ck_assert_ptr_nonnull(ptr3);
     
-    // When
+    // 메모리 접근 테스트
+    memset(ptr1, 0, 100);
+    memset(ptr2, 1, 1000);
+    memset(ptr3, 2, 10000);
+    
+    // Cleanup
     free(ptr1);
     free(ptr2);
-    
-    // 메모리 해제 후 NULL 설정하는 것이 좋은 실천
-    ptr1 = NULL;
-    ptr2 = NULL;
-    ck_assert_ptr_null(ptr1);
-    ck_assert_ptr_null(ptr2);
-}
-END_TEST
-
-/**
- * 설정 관련 헬퍼 함수 테스트
- */
-START_TEST(test_config_helpers)
-{
-    // 연결 이름 유효성 검증 함수 시뮬레이션
-    const char *valid_names[] = {"test-conn", "connection_1", "vpn-server"};
-    const char *invalid_names[] = {"", "test conn", "conn@example", NULL};
-    
-    // 유효한 이름들 테스트
-    for (int i = 0; i < 3; i++) {
-        ck_assert_ptr_nonnull(valid_names[i]);
-        ck_assert_int_gt(strlen(valid_names[i]), 0);
-        ck_assert_int_le(strlen(valid_names[i]), 64);
-    }
-    
-    // 잘못된 이름들 테스트
-    for (int i = 0; i < 4; i++) {
-        if (invalid_names[i] == NULL) {
-            ck_assert_ptr_null(invalid_names[i]);
-        } else if (strlen(invalid_names[i]) == 0) {
-            ck_assert_int_eq(strlen(invalid_names[i]), 0);
-        }
-    }
-}
-END_TEST
-
-/**
- * 에러 처리 테스트
- */
-START_TEST(test_error_handling)
-{
-    // NULL 포인터 안전성 테스트
-    char *null_str = NULL;
-    ck_assert_ptr_null(null_str);
-    
-    // 빈 문자열 처리 테스트
-    const char *empty_str = "";
-    ck_assert_int_eq(strlen(empty_str), 0);
-    
-    // 범위 검사 테스트
-    int valid_port = 500;
-    int invalid_port = 100000;
-    ck_assert_int_ge(valid_port, 1);
-    ck_assert_int_le(valid_port, 65535);
-    ck_assert_int_gt(invalid_port, 65535);
+    free(ptr3);
 }
 END_TEST
 
 Suite *simple_unit_suite(void)
 {
     Suite *s;
-    TCase *tc_json, *tc_string, *tc_config, *tc_error;
+    TCase *tc_extsock, *tc_json, *tc_memory;
 
     s = suite_create("Simple Unit Tests");
 
-    /* JSON 테스트 */
-    tc_json = tcase_create("JSON Operations");
+    /* ExternalSocket 에러 처리 테스트 */
+    tc_extsock = tcase_create("ExternalSocket Errors");
+    tcase_add_test(tc_extsock, test_extsock_error_create);
+    tcase_add_test(tc_extsock, test_extsock_error_destroy);
+    tcase_add_test(tc_extsock, test_extsock_error_various_codes);
+    tcase_add_test(tc_extsock, test_extsock_error_long_message);
+    tcase_add_test(tc_extsock, test_extsock_error_memory_conditions);
+    suite_add_tcase(s, tc_extsock);
+
+    /* JSON 처리 테스트 */
+    tc_json = tcase_create("JSON Processing");
     tcase_add_test(tc_json, test_json_parsing_basic);
-    tcase_add_test(tc_json, test_json_validation);
-    tcase_add_test(tc_json, test_array_operations);
+    tcase_add_test(tc_json, test_json_creation_basic);
     suite_add_tcase(s, tc_json);
 
-    /* 문자열 테스트 */
-    tc_string = tcase_create("String Operations");
-    tcase_add_test(tc_string, test_string_operations);
-    tcase_add_test(tc_string, test_memory_management);
-    suite_add_tcase(s, tc_string);
-
-    /* 설정 테스트 */
-    tc_config = tcase_create("Config Helpers");
-    tcase_add_test(tc_config, test_config_helpers);
-    suite_add_tcase(s, tc_config);
-
-    /* 에러 처리 테스트 */
-    tc_error = tcase_create("Error Handling");
-    tcase_add_test(tc_error, test_error_handling);
-    suite_add_tcase(s, tc_error);
+    /* 메모리 관리 테스트 */
+    tc_memory = tcase_create("Memory Management");
+    tcase_add_test(tc_memory, test_memory_allocation);
+    suite_add_tcase(s, tc_memory);
 
     return s;
 }
