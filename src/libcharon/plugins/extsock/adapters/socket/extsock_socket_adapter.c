@@ -3,6 +3,7 @@
  */
 
 #include "extsock_socket_adapter.h"
+#include "../../usecases/extsock_config_usecase.h"
 #include "../../common/extsock_common.h"
 
 #include <sys/socket.h>
@@ -28,6 +29,11 @@ struct private_extsock_socket_adapter_t {
      * 명령 처리기
      */
     extsock_command_handler_t *command_handler;
+
+    /**
+     * 설정 유스케이스
+     */
+    extsock_config_usecase_t *cfg_usecase;
     
     /**
      * 서버 소켓
@@ -120,7 +126,7 @@ static void* socket_thread_function(void *data)
             
             // 명령 처리
             if (this->command_handler) {
-                this->command_handler->handle_command(this->command_handler, buffer);
+                this->command_handler->handle_command(this->cfg_usecase, buffer);
             }
         }
         
@@ -205,9 +211,16 @@ METHOD(extsock_socket_adapter_t, destroy, void,
  * 소켓 어댑터 생성
  */
 extsock_socket_adapter_t *extsock_socket_adapter_create(
-    extsock_command_handler_t *command_handler)
+    extsock_config_usecase_t *cfg_usecase)
 {
     private_extsock_socket_adapter_t *this;
+
+    // cfg_usecase에서 command_handler 가져오기
+    extsock_command_handler_t *command_handler = cfg_usecase->get_command_handler(cfg_usecase);
+    if (!command_handler) {
+        EXTSOCK_DBG(1, "Failed to get command handler from config usecase");
+        return NULL;
+    }
 
     INIT(this,
         .public = {
@@ -226,6 +239,7 @@ extsock_socket_adapter_t *extsock_socket_adapter_create(
         .client_socket = -1,
         .running = FALSE,
         .mutex = mutex_create(MUTEX_TYPE_DEFAULT),
+        .cfg_usecase = cfg_usecase,
     );
 
     return &this->public;

@@ -165,8 +165,18 @@ METHOD(extsock_config_usecase_t, start_dpd, extsock_error_t,
  * 외부 명령 처리 (기존 handle_external_command 함수에서 이동)
  */
 METHOD(extsock_command_handler_t, handle_command, extsock_error_t,
-    private_extsock_config_usecase_t *this, const char *command)
+    extsock_config_usecase_t *config_usecase, const char *command)
 {
+    /*
+     * 타입 캐스팅 설명:
+     * - config_usecase는 extsock_config_usecase_t* (공개 인터페이스)
+     * - private_extsock_config_usecase_t의 첫 번째 멤버가 public이므로
+     * - C 표준에 의해 구조체 시작 주소 = 첫 번째 멤버 주소
+     * - 따라서 안전하게 private 구조체로 캐스팅 가능
+     * - offsetof(private_extsock_config_usecase_t, public) == 0
+     */
+    private_extsock_config_usecase_t *this = (private_extsock_config_usecase_t *)config_usecase;
+    
     if (!command) {
         return EXTSOCK_ERROR_CONFIG_INVALID;
     }
@@ -192,21 +202,40 @@ METHOD(extsock_command_handler_t, handle_command, extsock_error_t,
 }
 
 METHOD(extsock_command_handler_t, handle_config_command, extsock_error_t,
-    private_extsock_config_usecase_t *this, const char *config_json)
+    extsock_config_usecase_t *config_usecase, const char *config_json)
 {
+    /*
+     * 타입 캐스팅: config_usecase를 private 구조체로 안전하게 변환
+     * (첫 번째 멤버 public의 주소가 구조체 시작 주소와 동일)
+     */
+    private_extsock_config_usecase_t *this = (private_extsock_config_usecase_t *)config_usecase;
+    
     return this->public.apply_json_config(&this->public, config_json);
 }
 
 METHOD(extsock_command_handler_t, handle_dpd_command, extsock_error_t,
-    private_extsock_config_usecase_t *this, const char *ike_sa_name)
+    extsock_config_usecase_t *config_usecase, const char *ike_sa_name)
 {
+    /*
+     * 타입 캐스팅: config_usecase를 private 구조체로 안전하게 변환
+     * (첫 번째 멤버 public의 주소가 구조체 시작 주소와 동일)
+     */
+    private_extsock_config_usecase_t *this = (private_extsock_config_usecase_t *)config_usecase;
+    
     return this->public.start_dpd(&this->public, ike_sa_name);
 }
 
 METHOD(extsock_command_handler_t, destroy_handler, void,
-    private_extsock_config_usecase_t *this)
+    extsock_config_usecase_t *config_usecase)
 {
-    // 명령 처리기는 유스케이스의 일부이므로 별도 해제 불필요
+    /*
+     * 타입 캐스팅: config_usecase를 private 구조체로 안전하게 변환
+     * 명령 처리기는 유스케이스의 일부이므로 별도 해제 불필요
+     * config_usecase는 이미 존재하는 인스턴스이므로 여기서 해제하지 않음
+     */
+    // private_extsock_config_usecase_t *this = (private_extsock_config_usecase_t *)config_usecase;
+    
+    // 실제로는 아무것도 할 필요 없음 - 유스케이스가 전체적으로 해제될 때 처리됨
 }
 
 METHOD(extsock_config_usecase_t, get_command_handler, extsock_command_handler_t *,

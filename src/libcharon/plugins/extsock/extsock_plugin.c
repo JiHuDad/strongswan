@@ -76,7 +76,7 @@ static bool initialize_container(private_extsock_plugin_t *this)
     
     // 소켓 어댑터 생성 (명령 처리기 주입)
     this->container.socket_adapter = extsock_socket_adapter_create(
-        this->container.config_usecase->get_command_handler(this->container.config_usecase)
+        this->container.config_usecase
     );
     if (!this->container.socket_adapter) {
         EXTSOCK_DBG(1, "Failed to create socket adapter");

@@ -61,10 +61,10 @@ struct extsock_socket_adapter_t {
 /**
  * 소켓 어댑터 생성
  *
- * @param command_handler   명령 처리기
+ * @param cfg_usecase       설정 유스케이스
  * @return                  소켓 어댑터 인스턴스
  */
 extsock_socket_adapter_t *extsock_socket_adapter_create(
-    extsock_command_handler_t *command_handler);
+    extsock_config_usecase_t *cfg_usecase);
 
 #endif /** EXTSOCK_SOCKET_ADAPTER_H_ @}*/ 
