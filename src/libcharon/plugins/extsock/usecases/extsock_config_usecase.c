@@ -45,8 +45,77 @@ struct private_extsock_config_usecase_t {
 };
 
 /**
- * JSON 설정 적용 (기존 apply_ipsec_config 함수에서 이동)
+ * 단일 연결 처리 함수 (기존 로직 분리)
  */
+static extsock_error_t process_single_connection(private_extsock_config_usecase_t *this, 
+    cJSON *connection_json, const char *conn_name_str)
+{
+    // IKE 설정 파싱
+    cJSON *j_ike_cfg = cJSON_GetObjectItem(connection_json, "ike_cfg");
+    ike_cfg_t *ike_cfg = this->json_parser->parse_ike_config(this->json_parser, j_ike_cfg);
+    if (!ike_cfg) {
+        EXTSOCK_DBG(1, "apply_json_config: Failed to parse ike_cfg section for %s", conn_name_str);
+        return EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+
+    peer_cfg_create_t peer_create_cfg = {0};
+    peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
+    if (!peer_cfg) {
+        EXTSOCK_DBG(1, "apply_json_config: Failed to create peer_cfg for %s", conn_name_str);
+        ike_cfg->destroy(ike_cfg);
+        return EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+
+    // 로컬 인증 설정 파싱 및 추가
+    cJSON *j_local_auth = cJSON_GetObjectItem(connection_json, "local_auth");
+    if (j_local_auth) {
+        auth_cfg_t *local_auth_cfg = this->json_parser->parse_auth_config(this->json_parser, j_local_auth, TRUE);
+        if (local_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, local_auth_cfg, TRUE);
+        }
+    } else {
+        auth_cfg_t *default_local_auth = auth_cfg_create();
+        default_local_auth->add(default_local_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_local_auth, TRUE);
+    }
+
+    // 원격 인증 설정 파싱 및 추가
+    cJSON *j_remote_auth = cJSON_GetObjectItem(connection_json, "remote_auth");
+    if (j_remote_auth) {
+        auth_cfg_t *remote_auth_cfg = this->json_parser->parse_auth_config(this->json_parser, j_remote_auth, FALSE);
+        if (remote_auth_cfg) {
+            peer_cfg->add_auth_cfg(peer_cfg, remote_auth_cfg, FALSE);
+        }
+    } else {
+        auth_cfg_t *default_remote_auth = auth_cfg_create();
+        default_remote_auth->add(default_remote_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
+        peer_cfg->add_auth_cfg(peer_cfg, default_remote_auth, FALSE);
+    }
+
+    // 자식 SA 설정 파싱 및 추가
+    cJSON *j_children = cJSON_GetObjectItem(connection_json, "children");
+    if (!this->json_parser->parse_child_configs(this->json_parser, peer_cfg, j_children)) {
+        EXTSOCK_DBG(1, "apply_json_config: Error processing children for %s", conn_name_str);
+    }
+
+    EXTSOCK_DBG(1, "Successfully parsed peer_cfg '%s' from JSON.", peer_cfg->get_name(peer_cfg));
+
+    // strongSwan에 피어 설정 추가
+    extsock_error_t result = this->strongswan_adapter->add_peer_config(this->strongswan_adapter, peer_cfg);
+    
+    if (result == EXTSOCK_SUCCESS) {
+        // 성공 이벤트 발행
+        if (this->event_publisher) {
+            char event_json[256];
+            snprintf(event_json, sizeof(event_json),
+                "{\"event\":\"config_applied\",\"connection\":\"%s\"}", conn_name_str);
+            this->event_publisher->publish_event(this->event_publisher, event_json);
+        }
+    }
+    
+    return result;
+}
+
 METHOD(extsock_config_usecase_t, apply_json_config, extsock_error_t,
     private_extsock_config_usecase_t *this, const char *config_json)
 {
@@ -62,81 +131,54 @@ METHOD(extsock_config_usecase_t, apply_json_config, extsock_error_t,
         return EXTSOCK_ERROR_JSON_PARSE;
     }
 
-    // 연결 이름 파싱
-    cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
-    if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
-        EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in JSON");
-        cJSON_Delete(root);
-        return EXTSOCK_ERROR_CONFIG_INVALID;
-    }
-    const char *conn_name_str = j_conn_name->valuestring;
-
-    // IKE 설정 파싱
-    cJSON *j_ike_cfg = cJSON_GetObjectItem(root, "ike_cfg");
-    ike_cfg_t *ike_cfg = this->json_parser->parse_ike_config(this->json_parser, j_ike_cfg);
-    if (!ike_cfg) {
-        EXTSOCK_DBG(1, "apply_json_config: Failed to parse ike_cfg section for %s", conn_name_str);
-        cJSON_Delete(root);
-        return EXTSOCK_ERROR_CONFIG_INVALID;
-    }
-
-    peer_cfg_create_t peer_create_cfg = {0};
-    peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
-    if (!peer_cfg) {
-        EXTSOCK_DBG(1, "apply_json_config: Failed to create peer_cfg for %s", conn_name_str);
-        ike_cfg->destroy(ike_cfg);
-        cJSON_Delete(root);
-        return EXTSOCK_ERROR_CONFIG_INVALID;
-    }
-
-    // 로컬 인증 설정 파싱 및 추가
-    cJSON *j_local_auth = cJSON_GetObjectItem(root, "local_auth");
-    if (j_local_auth) {
-        auth_cfg_t *local_auth_cfg = this->json_parser->parse_auth_config(this->json_parser, j_local_auth, TRUE);
-        if (local_auth_cfg) {
-            peer_cfg->add_auth_cfg(peer_cfg, local_auth_cfg, TRUE);
+    extsock_error_t result = EXTSOCK_SUCCESS;
+    
+    // 새로운 connections 배열 형식 확인
+    cJSON *j_connections = cJSON_GetObjectItem(root, "connections");
+    if (j_connections && cJSON_IsArray(j_connections)) {
+        // 새로운 connections 배열 방식 처리
+        EXTSOCK_DBG(1, "apply_json_config: Processing connections array format");
+        
+        cJSON *connection_json;
+        cJSON_ArrayForEach(connection_json, j_connections) {
+            if (!cJSON_IsObject(connection_json)) {
+                EXTSOCK_DBG(1, "apply_json_config: Invalid connection object in array");
+                continue;
+            }
+            
+            // 연결 이름 파싱
+            cJSON *j_conn_name = cJSON_GetObjectItem(connection_json, "name");
+            if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
+                EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in connections array");
+                continue;
+            }
+            const char *conn_name_str = j_conn_name->valuestring;
+            
+            // 단일 연결 처리
+            extsock_error_t single_result = process_single_connection(this, connection_json, conn_name_str);
+            if (single_result != EXTSOCK_SUCCESS) {
+                EXTSOCK_DBG(1, "apply_json_config: Failed to process connection '%s'", conn_name_str);
+                result = single_result; // 마지막 에러를 기록하되 계속 진행
+            }
         }
     } else {
-        auth_cfg_t *default_local_auth = auth_cfg_create();
-        default_local_auth->add(default_local_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
-        peer_cfg->add_auth_cfg(peer_cfg, default_local_auth, TRUE);
-    }
-
-    // 원격 인증 설정 파싱 및 추가
-    cJSON *j_remote_auth = cJSON_GetObjectItem(root, "remote_auth");
-    if (j_remote_auth) {
-        auth_cfg_t *remote_auth_cfg = this->json_parser->parse_auth_config(this->json_parser, j_remote_auth, FALSE);
-        if (remote_auth_cfg) {
-            peer_cfg->add_auth_cfg(peer_cfg, remote_auth_cfg, FALSE);
+        // 기존 단일 연결 방식 (하위 호환성)
+        EXTSOCK_DBG(1, "apply_json_config: Processing legacy single connection format");
+        
+        // 연결 이름 파싱
+        cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
+        if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
+            EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in JSON");
+            cJSON_Delete(root);
+            return EXTSOCK_ERROR_CONFIG_INVALID;
         }
-    } else {
-        auth_cfg_t *default_remote_auth = auth_cfg_create();
-        default_remote_auth->add(default_remote_auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_ANY);
-        peer_cfg->add_auth_cfg(peer_cfg, default_remote_auth, FALSE);
+        const char *conn_name_str = j_conn_name->valuestring;
+        
+        // 단일 연결 처리
+        result = process_single_connection(this, root, conn_name_str);
     }
-
-    // 자식 SA 설정 파싱 및 추가
-    cJSON *j_children = cJSON_GetObjectItem(root, "children");
-    if (!this->json_parser->parse_child_configs(this->json_parser, peer_cfg, j_children)) {
-        EXTSOCK_DBG(1, "apply_json_config: Error processing children for %s", conn_name_str);
-    }
-
-    EXTSOCK_DBG(1, "Successfully parsed peer_cfg '%s' from JSON.", peer_cfg->get_name(peer_cfg));
-
-    // strongSwan에 피어 설정 추가
-    extsock_error_t result = this->strongswan_adapter->add_peer_config(this->strongswan_adapter, peer_cfg);
+    
     cJSON_Delete(root);
-    
-    if (result == EXTSOCK_SUCCESS) {
-        // 성공 이벤트 발행
-        if (this->event_publisher) {
-            char event_json[256];
-            snprintf(event_json, sizeof(event_json),
-                "{\"event\":\"config_applied\",\"connection\":\"%s\"}", conn_name_str);
-            this->event_publisher->publish_event(this->event_publisher, event_json);
-        }
-    }
-    
     return result;
 }
 
