@@ -11,6 +11,9 @@
 #include <daemon.h>
 #include <library.h>
 
+// IKE lifetime 파싱 함수 선언
+static void parse_ike_lifetime(cJSON *ike_json, peer_cfg_create_t *peer_cfg);
+
 typedef struct private_extsock_config_usecase_t private_extsock_config_usecase_t;
 
 /**
@@ -45,6 +48,47 @@ struct private_extsock_config_usecase_t {
 };
 
 /**
+ * IKE lifetime 설정 파싱
+ */
+static void parse_ike_lifetime(cJSON *ike_json, peer_cfg_create_t *peer_cfg)
+{
+    if (!ike_json) {
+        EXTSOCK_DBG(2, "No IKE configuration found for lifetime parsing");
+        return;
+    }
+    
+    cJSON *j_lifetime = cJSON_GetObjectItem(ike_json, "lifetime");
+    if (!j_lifetime) {
+        EXTSOCK_DBG(2, "No IKE lifetime configuration found, using defaults");
+        return;
+    }
+    
+    cJSON *j_rekey = cJSON_GetObjectItem(j_lifetime, "rekey_time");
+    if (j_rekey && cJSON_IsNumber(j_rekey)) {
+        peer_cfg->rekey_time = j_rekey->valueint;
+        EXTSOCK_DBG(1, "IKE rekey_time set to %u seconds", peer_cfg->rekey_time);
+    }
+    
+    cJSON *j_reauth = cJSON_GetObjectItem(j_lifetime, "reauth_time");
+    if (j_reauth && cJSON_IsNumber(j_reauth)) {
+        peer_cfg->reauth_time = j_reauth->valueint;
+        EXTSOCK_DBG(1, "IKE reauth_time set to %u seconds", peer_cfg->reauth_time);
+    }
+    
+    cJSON *j_over = cJSON_GetObjectItem(j_lifetime, "over_time");
+    if (j_over && cJSON_IsNumber(j_over)) {
+        peer_cfg->over_time = j_over->valueint;
+        EXTSOCK_DBG(1, "IKE over_time set to %u seconds", peer_cfg->over_time);
+    }
+    
+    cJSON *j_jitter = cJSON_GetObjectItem(j_lifetime, "jitter_time");
+    if (j_jitter && cJSON_IsNumber(j_jitter)) {
+        peer_cfg->jitter_time = j_jitter->valueint;
+        EXTSOCK_DBG(1, "IKE jitter_time set to %u seconds", peer_cfg->jitter_time);
+    }
+}
+
+/**
  * 단일 연결 처리 함수 (기존 로직 분리)
  */
 static extsock_error_t process_single_connection(private_extsock_config_usecase_t *this, 
@@ -59,6 +103,10 @@ static extsock_error_t process_single_connection(private_extsock_config_usecase_
     }
 
     peer_cfg_create_t peer_create_cfg = {0};
+    
+    // IKE lifetime 설정 파싱
+    parse_ike_lifetime(j_ike_cfg, &peer_create_cfg);
+    
     peer_cfg_t *peer_cfg = peer_cfg_create((char*)conn_name_str, ike_cfg, &peer_create_cfg);
     if (!peer_cfg) {
         EXTSOCK_DBG(1, "apply_json_config: Failed to create peer_cfg for %s", conn_name_str);
@@ -202,6 +250,8 @@ METHOD(extsock_config_usecase_t, start_dpd, extsock_error_t,
     return this->strongswan_adapter->config_repository.start_dpd(
         &this->strongswan_adapter->config_repository, ike_sa_name);
 }
+
+
 
 /**
  * 외부 명령 처리 (기존 handle_external_command 함수에서 이동)

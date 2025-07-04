@@ -144,6 +144,85 @@ METHOD(listener_t, child_updown, bool,
     return TRUE;
 }
 
+/**
+ * IKE SA rekey 이벤트 처리
+ */
+METHOD(listener_t, ike_rekey, bool,
+    private_extsock_event_usecase_t *this, ike_sa_t *old, ike_sa_t *new)
+{
+    if (!old || !new) {
+        return TRUE;
+    }
+    
+    const char *old_name = old->get_name(old);
+    const char *new_name = new->get_name(new);
+    EXTSOCK_DBG(1, "IKE SA rekey event: %s -> %s", old_name, new_name);
+    
+    // JSON 이벤트 생성 및 전송
+    cJSON *event_json = cJSON_CreateObject();
+    if (!event_json) {
+        EXTSOCK_DBG(1, "Failed to create IKE rekey event JSON object");
+        return TRUE;
+    }
+    
+    cJSON_AddStringToObject(event_json, "event", "ike_rekey");
+    cJSON_AddStringToObject(event_json, "old_ike_sa_name", old_name);
+    cJSON_AddStringToObject(event_json, "new_ike_sa_name", new_name);
+    
+    char *event_string = cJSON_Print(event_json);
+    if (event_string) {
+        extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
+        if (publisher) {
+            publisher->publish_event(publisher, event_string);
+        }
+        free(event_string);
+    }
+    
+    cJSON_Delete(event_json);
+    return TRUE;
+}
+
+/**
+ * CHILD SA rekey 이벤트 처리
+ */
+METHOD(listener_t, child_rekey, bool,
+    private_extsock_event_usecase_t *this, ike_sa_t *ike_sa, child_sa_t *old, child_sa_t *new)
+{
+    if (!ike_sa || !old || !new) {
+        return TRUE;
+    }
+    
+    const char *ike_name = ike_sa->get_name(ike_sa);
+    const char *old_child_name = old->get_name(old);
+    const char *new_child_name = new->get_name(new);
+    EXTSOCK_DBG(1, "CHILD SA rekey event: %s/%s -> %s/%s", 
+               ike_name, old_child_name, ike_name, new_child_name);
+    
+    // JSON 이벤트 생성 및 전송
+    cJSON *event_json = cJSON_CreateObject();
+    if (!event_json) {
+        EXTSOCK_DBG(1, "Failed to create CHILD rekey event JSON object");
+        return TRUE;
+    }
+    
+    cJSON_AddStringToObject(event_json, "event", "child_rekey");
+    cJSON_AddStringToObject(event_json, "ike_sa_name", ike_name);
+    cJSON_AddStringToObject(event_json, "old_child_sa_name", old_child_name);
+    cJSON_AddStringToObject(event_json, "new_child_sa_name", new_child_name);
+    
+    char *event_string = cJSON_Print(event_json);
+    if (event_string) {
+        extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
+        if (publisher) {
+            publisher->publish_event(publisher, event_string);
+        }
+        free(event_string);
+    }
+    
+    cJSON_Delete(event_json);
+    return TRUE;
+}
+
 METHOD(extsock_event_usecase_t, get_event_publisher, extsock_event_publisher_t *,
     private_extsock_event_usecase_t *this)
 {
@@ -176,6 +255,8 @@ extsock_event_usecase_t *extsock_event_usecase_create()
             .listener = {
                 .ike_updown = _ike_updown,
                 .child_updown = _child_updown,
+                .ike_rekey = _ike_rekey,
+                .child_rekey = _child_rekey,
             },
             .handle_child_updown = _handle_child_updown,
             .get_event_publisher = _get_event_publisher,

@@ -203,7 +203,50 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
         }
         ike_proposals->destroy(ike_proposals);
     }
-    return ike_cfg;
+     return ike_cfg;
+}
+
+
+
+/**
+ * CHILD SA lifetime 설정 파싱
+ */
+static lifetime_cfg_t* parse_child_lifetime(cJSON *child_json)
+{
+    lifetime_cfg_t *lifetime = malloc_thing(lifetime_cfg_t);
+    memset(lifetime, 0, sizeof(*lifetime));
+    
+    cJSON *j_lifetime = cJSON_GetObjectItem(child_json, "lifetime");
+    if (!j_lifetime) {
+        // 기본값 설정
+        lifetime->time.rekey = 3600;  // 1시간
+        lifetime->time.life = 7200;   // 2시간
+        return lifetime;
+    }
+    
+    cJSON *j_rekey = cJSON_GetObjectItem(j_lifetime, "rekey_time");
+    if (j_rekey && cJSON_IsNumber(j_rekey)) {
+        lifetime->time.rekey = j_rekey->valueint;
+    }
+    
+    cJSON *j_life = cJSON_GetObjectItem(j_lifetime, "life_time");
+    if (j_life && cJSON_IsNumber(j_life)) {
+        lifetime->time.life = j_life->valueint;
+    }
+    
+    cJSON *j_rekey_bytes = cJSON_GetObjectItem(j_lifetime, "rekey_bytes");
+    if (j_rekey_bytes && cJSON_IsNumber(j_rekey_bytes)) {
+        lifetime->bytes.rekey = j_rekey_bytes->valueint;
+    }
+    
+    cJSON *j_life_bytes = cJSON_GetObjectItem(j_lifetime, "life_bytes");
+    if (j_life_bytes && cJSON_IsNumber(j_life_bytes)) {
+        lifetime->bytes.life = j_life_bytes->valueint;
+    }
+    
+    // packets, jitter 등 추가 설정...
+    
+    return lifetime;
 }
 
 METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
@@ -302,6 +345,13 @@ METHOD(extsock_json_parser_t, parse_child_configs, bool,
             child_create_cfg.dpd_action = string_to_action(j_dpd_action->valuestring);
         } else {
             child_create_cfg.dpd_action = ACTION_NONE; 
+        }
+
+        // CHILD SA lifetime 설정 파싱
+        lifetime_cfg_t *lifetime = parse_child_lifetime(child_json);
+        if (lifetime) {
+            child_create_cfg.lifetime = *lifetime;
+            free(lifetime);
         }
 
         child_cfg_t *child_cfg = child_cfg_create((char*)child_name_str, &child_create_cfg);
