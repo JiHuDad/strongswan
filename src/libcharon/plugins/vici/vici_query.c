@@ -178,7 +178,7 @@ static void list_label(vici_builder_t *b, child_sa_t *child, child_cfg_t *cfg)
 static void list_ake(vici_builder_t *b, proposal_t *proposal)
 {
 	transform_type_t transform;
-	char ake_str[5];
+	char ake_str[16];  /* Increased buffer size to handle larger numbers */
 	uint16_t alg;
 	int ake;
 
@@ -187,7 +187,7 @@ static void list_ake(vici_builder_t *b, proposal_t *proposal)
 		transform = ADDITIONAL_KEY_EXCHANGE_1 + ake - 1;
 		if (proposal->get_algorithm(proposal, transform, &alg, NULL))
 		{
-			sprintf(ake_str, "ake%d", ake);
+			snprintf(ake_str, sizeof(ake_str), "ake%d", ake);
 			b->add_kv(b, ake_str, "%N", key_exchange_method_names, alg);
 		}
 	}

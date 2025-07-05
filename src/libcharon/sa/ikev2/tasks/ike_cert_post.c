@@ -80,10 +80,14 @@ static bool build_hash_url_payload(char *base, certificate_t *cert,
 	chunk_free(&encoded);
 	hasher->destroy(hasher);
 
-	url = malloc(strlen(base) + 40 + 1);
-	strcpy(url, base);
 	hex_hash = chunk_to_hex(hash, NULL, FALSE).ptr;
-	strncat(url, hex_hash, 40);
+	url = malloc(strlen(base) + strlen(hex_hash) + 1);
+	if (!url) {
+		free(hex_hash);
+		return FALSE;
+	}
+	strcpy(url, base);
+	strcat(url, hex_hash);
 	free(hex_hash);
 
 	DBG1(DBG_IKE, "sending hash-and-url \"%s\"", url);

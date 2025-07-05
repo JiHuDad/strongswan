@@ -236,29 +236,41 @@ static char* json_array_to_comma_separated_string(cJSON *json_array) {
     }
 
     size_t total_len = 0;
+    int valid_count = 0;
     cJSON *item;
+    
+    /* Calculate exact required length */
     cJSON_ArrayForEach(item, json_array) {
-        if (cJSON_IsString(item) && item->valuestring) {
-            total_len += strlen(item->valuestring) + 1; // +1 for comma
+        if (cJSON_IsString(item) && item->valuestring && *(item->valuestring)) {
+            total_len += strlen(item->valuestring);
+            valid_count++;
         }
     }
     
-    if (total_len == 0) {
+    if (valid_count == 0) {
         return strdup("%any");
     }
+    
+    /* Add space for commas (valid_count - 1) and null terminator */
+    total_len += (valid_count > 1) ? (valid_count - 1) : 0;
     
     char *result = malloc(total_len + 1);
     if (!result) return strdup("%any");
     
-    result[0] = '\0';
+    char *pos = result;
     bool first = true;
     cJSON_ArrayForEach(item, json_array) {
         if (cJSON_IsString(item) && item->valuestring && *(item->valuestring)) {
-            if (!first) strcat(result, ",");
-            strcat(result, item->valuestring);
+            if (!first) {
+                *pos++ = ',';
+            }
+            size_t len = strlen(item->valuestring);
+            memcpy(pos, item->valuestring, len);
+            pos += len;
             first = false;
         }
     }
+    *pos = '\0';
     
     return result;
 }
