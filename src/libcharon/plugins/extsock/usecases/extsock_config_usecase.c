@@ -105,6 +105,22 @@ static extsock_error_t process_single_connection(private_extsock_config_usecase_
 
     peer_cfg_create_t peer_create_cfg = {0};
     
+    // MOBIKE 설정 파싱 (기본값: 비활성화)
+    peer_create_cfg.options = OPT_NO_MOBIKE;  // 기본값으로 MOBIKE 비활성화
+    
+    cJSON *j_mobike = cJSON_GetObjectItem(connection_json, "mobike");
+    if (j_mobike && cJSON_IsBool(j_mobike)) {
+        if (cJSON_IsTrue(j_mobike)) {
+            peer_create_cfg.options = 0;  // MOBIKE 활성화 (플래그 제거)
+            EXTSOCK_DBG(2, "MOBIKE enabled for connection: %s", conn_name_str);
+        } else {
+            peer_create_cfg.options = OPT_NO_MOBIKE;  // MOBIKE 비활성화
+            EXTSOCK_DBG(2, "MOBIKE disabled for connection: %s", conn_name_str);
+        }
+    } else {
+        EXTSOCK_DBG(2, "MOBIKE not specified, using default (disabled) for connection: %s", conn_name_str);
+    }
+    
     // IKE lifetime 설정 파싱
     parse_ike_lifetime(j_ike_cfg, &peer_create_cfg);
     

@@ -6,6 +6,7 @@
 #include "../../common/extsock_common.h"
 #include "../../domain/extsock_config_entity.h"
 
+#include <cjson/cJSON.h>
 #include <daemon.h>
 #include <library.h>
 #include <config/ike_cfg.h>
@@ -18,6 +19,7 @@
 #include <utils/chunk.h>
 #include <selectors/traffic_selector.h>
 #include <collections/linked_list.h>
+#include <utils/debug.h>
 
 typedef struct private_extsock_json_parser_t private_extsock_json_parser_t;
 
@@ -180,8 +182,10 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
     } else {
         ike_create_cfg.version = IKE_ANY; 
     }
-    ike_create_cfg.local_port = 0;
-    ike_create_cfg.remote_port = 0;
+    
+    // 포트 설정 - 기본값 사용
+    ike_create_cfg.local_port = charon->socket->get_port(charon->socket, FALSE);
+    ike_create_cfg.remote_port = IKEV2_UDP_PORT;
 
     // ike_cfg 객체 생성
     ike_cfg_t *ike_cfg = ike_cfg_create(&ike_create_cfg);

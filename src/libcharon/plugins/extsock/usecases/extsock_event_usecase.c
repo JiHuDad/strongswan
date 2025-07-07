@@ -71,7 +71,7 @@ METHOD(extsock_event_usecase_t, handle_child_updown, void,
     if (event_string) {
         extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
         if (publisher) {
-            publisher->publish_event(publisher, event_string);
+            publisher->publish_event(&this->event_publisher, event_string);
         }
         free(event_string);
     }
@@ -107,7 +107,7 @@ METHOD(extsock_event_publisher_t, publish_tunnel_event, extsock_error_t,
 METHOD(extsock_event_publisher_t, destroy_publisher, void,
     private_extsock_event_usecase_t *this)
 {
-    // 이벤트 발행자는 유스케이스의 일부이므로 별도 해제 불필요
+    // Publisher는 event_usecase의 일부이므로 별도 정리 불필요
 }
 
 /**
@@ -130,7 +130,7 @@ METHOD(listener_t, ike_updown, bool,
         
         extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
         if (publisher) {
-            publisher->publish_event(publisher, event_json);
+            publisher->publish_event(&this->event_publisher, event_json);
         }
     }
     
@@ -173,7 +173,7 @@ METHOD(listener_t, ike_rekey, bool,
     if (event_string) {
         extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
         if (publisher) {
-            publisher->publish_event(publisher, event_string);
+            publisher->publish_event(&this->event_publisher, event_string);
         }
         free(event_string);
     }
@@ -214,7 +214,7 @@ METHOD(listener_t, child_rekey, bool,
     if (event_string) {
         extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
         if (publisher) {
-            publisher->publish_event(publisher, event_string);
+            publisher->publish_event(&this->event_publisher, event_string);
         }
         free(event_string);
     }
