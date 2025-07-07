@@ -64,10 +64,10 @@ static bool initialize_container(private_extsock_plugin_t *this)
         return FALSE;
     }
     
-    // 설정 유스케이스 생성 (JSON 파서와 이벤트 발행자 주입)
+    // 설정 유스케이스 생성 (JSON 파서와 이벤트 유스케이스 주입)
     this->container.config_usecase = extsock_config_usecase_create(
         this->container.json_parser,
-        this->container.event_usecase->get_event_publisher(this->container.event_usecase)
+        this->container.event_usecase
     );
     if (!this->container.config_usecase) {
         EXTSOCK_DBG(1, "Failed to create config usecase");

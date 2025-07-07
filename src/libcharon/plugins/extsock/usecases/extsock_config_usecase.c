@@ -6,6 +6,7 @@
 #include "../common/extsock_common.h"
 #include "../adapters/strongswan/extsock_strongswan_adapter.h"
 #include "../adapters/json/extsock_json_parser.h"
+#include "extsock_event_usecase.h"
 
 #include <cjson/cJSON.h>
 #include <daemon.h>
@@ -350,7 +351,7 @@ METHOD(extsock_config_usecase_t, destroy, void,
  */
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *json_parser,
-    extsock_event_publisher_t *event_publisher)
+    extsock_event_usecase_t *event_usecase)
 {
     private_extsock_config_usecase_t *this;
 
@@ -369,7 +370,7 @@ extsock_config_usecase_t *extsock_config_usecase_create(
             .destroy = _destroy_handler,
         },
         .json_parser = json_parser,
-        .event_publisher = event_publisher,
+        .event_publisher = event_usecase ? event_usecase->get_event_publisher(event_usecase) : NULL,
         .strongswan_adapter = extsock_strongswan_adapter_create(),
     );
 

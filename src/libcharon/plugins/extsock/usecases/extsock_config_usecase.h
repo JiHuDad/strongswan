@@ -71,11 +71,11 @@ struct extsock_config_usecase_t {
  * 설정 관리 유스케이스 생성
  *
  * @param json_parser       JSON 파싱 어댑터
- * @param event_publisher   이벤트 발행자
+ * @param event_usecase     이벤트 처리 유스케이스
  * @return                  설정 관리 유스케이스 인스턴스
  */
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *json_parser,
-    extsock_event_publisher_t *event_publisher);
+    extsock_event_usecase_t *event_usecase);
 
 #endif /** EXTSOCK_CONFIG_USECASE_H_ @}*/ 

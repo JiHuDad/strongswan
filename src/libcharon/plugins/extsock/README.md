@@ -114,6 +114,81 @@ START_DPD vpn-conn1
 
 ---
 
+## 🔄 자동 Rekeying (Lifetime 설정)
+
+extsock 플러그인은 **lifetime 설정을 통한 자동 rekeying**을 지원합니다. Manual rekey 명령은 지원하지 않으며, strongSwan의 내장 rekeying 메커니즘을 활용합니다.
+
+### Lifetime 설정 예시
+```json
+{
+  "connections": [
+    {
+      "name": "vpn-conn1",
+      "ike_cfg": {
+        "local_addrs": ["192.168.1.10"],
+        "remote_addrs": ["203.0.113.5"],
+        "version": 2,
+        "proposals": ["aes256-sha256-modp2048"],
+        "lifetime": {
+          "rekey_time": "2h",
+          "reauth_time": "1d",
+          "over_time": "10m"
+        }
+      },
+      "local_auth": {
+        "auth": "psk",
+        "id": "client@example.com",
+        "secret": "test_secret_123"
+      },
+      "remote_auth": {
+        "auth": "psk",
+        "id": "server@example.com"
+      },
+      "children": [
+        {
+          "name": "child1",
+          "start_action": "start",
+          "local_ts": ["10.0.0.0/24"],
+          "remote_ts": ["10.1.0.0/24"],
+          "esp_proposals": ["aes256-sha256"],
+          "lifetime": {
+            "rekey_time": "1h",
+            "over_time": "5m"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Lifetime 설정 옵션
+- `rekey_time`: SA rekey 간격 (예: "1h", "30m", "2d")
+- `reauth_time`: IKE SA 재인증 간격 (IKE SA만 해당)
+- `over_time`: SA 만료 후 정리 대기 시간
+
+### Rekey 이벤트
+자동 rekey가 발생하면 다음과 같은 이벤트가 외부로 전송됩니다:
+
+#### IKE SA Rekey 이벤트
+```json
+{
+  "event": "ike_rekey_initiated",
+  "ike_sa_name": "vpn-conn1"
+}
+```
+
+#### CHILD SA Rekey 이벤트
+```json
+{
+  "event": "child_rekey_initiated",
+  "ike_sa_name": "vpn-conn1",
+  "child_sa_name": "child1"
+}
+```
+
+---
+
 ## 외부 프로그램 통합 예제 (APPLY_CONFIG + tunnel_up 후 DPD)
 
 아래 예제는 다음을 모두 포함합니다:
@@ -262,4 +337,177 @@ int main() {
 ## 참고
 - cJSON 외에도 Python, Go 등 다양한 언어에서 JSON 문자열을 만들어 동일하게 전송할 수 있습니다.
 - 소켓 경로, JSON 포맷 등은 플러그인 코드와 일치해야 합니다.
-- 실제 strongSwan 설정 적용은 향후 구현 예정입니다. 
+- 실제 strongSwan 설정 적용은 향후 구현 예정입니다.
+
+## 📋 JSON 설정 형식
+
+### 🔄 새로운 Connections 배열 방식 (권장)
+
+extsock 플러그인은 이제 **여러 연결을 한 번에 설정**할 수 있는 `connections` 배열 형식을 지원합니다:
+
+### 🔄 Lifetime 및 Rekeying 설정 지원
+
+extsock 플러그인은 이제 **IKE SA와 CHILD SA의 lifetime 및 rekeying 설정**을 지원합니다:
+
+```json
+{
+  "connections": [
+    {
+      "name": "vpn_connection_1",
+      "ike_cfg": {
+        "local_addrs": ["192.168.1.10"],
+        "remote_addrs": ["203.0.113.5"],
+        "version": 2,
+        "proposals": ["aes256-sha256-modp2048"],
+        "lifetime": {
+          "rekey_time": 1800,
+          "reauth_time": 3600,
+          "over_time": 900,
+          "jitter_time": 300
+        }
+      },
+      "local_auth": {
+        "auth": "psk",
+        "id": "client1@example.com",
+        "secret": "secret123"
+      },
+      "remote_auth": {
+        "auth": "psk",
+        "id": "server1@example.com"
+      },
+      "children": [
+        {
+          "name": "child1",
+          "start_action": "start",
+          "dpd_action": "restart",
+          "lifetime": {
+            "rekey_time": 900,
+            "life_time": 1800,
+            "rekey_bytes": 1000000000,
+            "life_bytes": 2000000000,
+            "rekey_packets": 1000000,
+            "life_packets": 2000000,
+            "jitter_time": 60
+          },
+          "local_ts": ["10.0.0.0/24"],
+          "remote_ts": ["10.1.0.0/24"],
+          "esp_proposals": ["aes256-sha256"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### 📊 Lifetime 설정 필드 설명
+
+#### IKE SA Lifetime 설정
+- `rekey_time`: IKE SA rekey 시간 (초, 기본값: 28800)
+- `reauth_time`: IKE SA 재인증 시간 (초, 기본값: 0 = 비활성화)
+- `over_time`: IKE SA 만료 후 유지 시간 (초, 기본값: 0)
+- `jitter_time`: rekey 시간에 추가되는 랜덤 지터 (초, 기본값: 0)
+
+#### CHILD SA Lifetime 설정
+- `rekey_time`: CHILD SA rekey 시간 (초, 기본값: 3600)
+- `life_time`: CHILD SA 수명 시간 (초, 기본값: 7200)
+- `rekey_bytes`: CHILD SA rekey 바이트 수 (기본값: 0 = 비활성화)
+- `life_bytes`: CHILD SA 수명 바이트 수 (기본값: 0 = 비활성화)
+- `rekey_packets`: CHILD SA rekey 패킷 수 (기본값: 0 = 비활성화)
+- `life_packets`: CHILD SA 수명 패킷 수 (기본값: 0 = 비활성화)
+- `jitter_time`: rekey 시간에 추가되는 랜덤 지터 (초, 기본값: 300)
+          "start_action": "start",
+          "local_ts": ["10.0.0.0/24"],
+          "remote_ts": ["10.0.1.0/24"]
+        }
+      ]
+    },
+    {
+      "name": "vpn_connection_2",
+      "ike_cfg": {
+        "local_addrs": ["10.0.0.1"],
+        "remote_addrs": ["10.0.1.1"],
+        "version": 2,
+        "proposals": ["aes128-sha256-modp2048"]
+      },
+      "local_auth": {
+        "auth": "pubkey",
+        "id": "client2@example.com"
+      },
+      "remote_auth": {
+        "auth": "pubkey",
+        "id": "server2@example.com"
+      },
+      "children": [
+        {
+          "name": "child2",
+          "start_action": "start",
+          "local_ts": ["172.16.0.0/24"],
+          "remote_ts": ["172.16.1.0/24"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### 🔄 기존 단일 연결 방식 (하위 호환성)
+
+기존 단일 연결 방식도 계속 지원됩니다:
+
+```json
+{
+  "name": "legacy_connection",
+  "ike_cfg": {
+    "local_addrs": ["192.168.1.10"],
+    "remote_addrs": ["203.0.113.5"],
+    "version": 2,
+    "proposals": ["aes256-sha256-modp2048"]
+  },
+  "local_auth": {
+    "auth": "psk",
+    "id": "client@example.com",
+    "secret": "secret123"
+  },
+  "remote_auth": {
+    "auth": "psk",
+    "id": "server@example.com"
+  },
+  "children": [
+    {
+      "name": "child1",
+      "start_action": "start",
+      "local_ts": ["10.0.0.0/24"],
+      "remote_ts": ["10.0.1.0/24"]
+    }
+  ]
+}
+```
+
+### 🎯 주요 장점
+
+#### 새로운 Connections 배열 방식:
+- ✅ **다중 연결 지원**: 한 번의 `APPLY_CONFIG` 명령으로 여러 연결 설정
+- ✅ **일관된 구조**: 모든 연결이 동일한 형식 사용
+- ✅ **효율성**: 네트워크 통신 횟수 감소
+- ✅ **원자성**: 모든 연결 설정이 함께 처리됨
+
+#### 기존 단일 연결 방식:
+- ✅ **하위 호환성**: 기존 코드 그대로 사용 가능
+- ✅ **단순성**: 하나의 연결만 필요한 경우 간단함
+
+### 📊 사용 예시
+
+#### 1. 단일 연결 (새로운 방식)
+```bash
+echo 'APPLY_CONFIG {"connections":[{"name":"vpn1","ike_cfg":{"local_addrs":["192.168.1.10"],"remote_addrs":["203.0.113.5"],"version":2},"local_auth":{"auth":"psk","id":"client@example.com","secret":"secret123"}}]}' | socat - /var/run/strongswan/extsock.sock
+```
+
+#### 2. 다중 연결 (새로운 방식)
+```bash
+echo 'APPLY_CONFIG {"connections":[{"name":"vpn1","ike_cfg":{"local_addrs":["192.168.1.10"],"remote_addrs":["203.0.113.5"],"version":2},"local_auth":{"auth":"psk","id":"client1@example.com","secret":"secret123"}},{"name":"vpn2","ike_cfg":{"local_addrs":["10.0.0.1"],"remote_addrs":["10.0.1.1"],"version":2},"local_auth":{"auth":"psk","id":"client2@example.com","secret":"secret456"}}]}' | socat - /var/run/strongswan/extsock.sock
+```
+
+#### 3. 기존 방식 (하위 호환성)
+```bash
+echo 'APPLY_CONFIG {"name":"legacy_vpn","ike_cfg":{"local_addrs":["192.168.1.10"],"remote_addrs":["203.0.113.5"],"version":2},"local_auth":{"auth":"psk","id":"client@example.com","secret":"secret123"}}' | socat - /var/run/strongswan/extsock.sock
+``` 

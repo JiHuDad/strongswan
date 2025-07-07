@@ -471,7 +471,8 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create();
 // 설정 유스케이스 생성
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *json_parser,
-    extsock_event_publisher_t *event_publisher);
+    extsock_event_usecase_t *event_usecase
+);
 
 // 이벤트 유스케이스 생성
 extsock_event_usecase_t *extsock_event_usecase_create();
@@ -498,7 +499,7 @@ extsock_event_usecase_t *event_usecase = extsock_event_usecase_create();
 // 2. 유스케이스 생성 (의존성 주입)
 extsock_config_usecase_t *config_usecase = extsock_config_usecase_create(
     json_parser,
-    event_usecase->get_event_publisher(event_usecase)
+    event_usecase
 );
 
 // 3. 소켓 어댑터 생성 (의존성 주입)

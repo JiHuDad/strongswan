@@ -105,7 +105,7 @@ src/libcharon/plugins/extsock/
 // 생성자 의존성 주입
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *parser,
-    extsock_strongswan_adapter_t *strongswan);
+    extsock_event_usecase_t *event_usecase);
 ```
 
 ### 메모리 관리
