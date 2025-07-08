@@ -238,6 +238,7 @@ static lifetime_cfg_t* parse_child_lifetime(cJSON *child_json)
         lifetime->time.life = j_life->valueint;
     }
     
+    /*
     cJSON *j_rekey_bytes = cJSON_GetObjectItem(j_lifetime, "rekey_bytes");
     if (j_rekey_bytes && cJSON_IsNumber(j_rekey_bytes)) {
         lifetime->bytes.rekey = j_rekey_bytes->valueint;
@@ -247,6 +248,7 @@ static lifetime_cfg_t* parse_child_lifetime(cJSON *child_json)
     if (j_life_bytes && cJSON_IsNumber(j_life_bytes)) {
         lifetime->bytes.life = j_life_bytes->valueint;
     }
+    */
     
     // packets, jitter 등 추가 설정...
     

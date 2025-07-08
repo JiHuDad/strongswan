@@ -70,6 +70,7 @@ static void parse_ike_lifetime(cJSON *ike_json, peer_cfg_create_t *peer_cfg)
         EXTSOCK_DBG(1, "IKE rekey_time set to %u seconds", peer_cfg->rekey_time);
     }
     
+    /*
     cJSON *j_reauth = cJSON_GetObjectItem(j_lifetime, "reauth_time");
     if (j_reauth && cJSON_IsNumber(j_reauth)) {
         peer_cfg->reauth_time = j_reauth->valueint;
@@ -87,6 +88,7 @@ static void parse_ike_lifetime(cJSON *ike_json, peer_cfg_create_t *peer_cfg)
         peer_cfg->jitter_time = j_jitter->valueint;
         EXTSOCK_DBG(1, "IKE jitter_time set to %u seconds", peer_cfg->jitter_time);
     }
+    */
 }
 
 /**
