@@ -9,6 +9,7 @@
 #include <daemon.h>
 #include <sa/child_sa.h>
 #include <cjson/cJSON.h>
+#include <stddef.h>  /* offsetof를 위해 추가 */
 
 typedef struct private_extsock_event_usecase_t private_extsock_event_usecase_t;
 
@@ -83,11 +84,17 @@ METHOD(extsock_event_usecase_t, handle_child_updown, void,
  * 이벤트 발행 (기존 send_event_to_external 함수 연동)
  */
 METHOD(extsock_event_publisher_t, publish_event, extsock_error_t,
-    private_extsock_event_usecase_t *this, const char *event_json)
+    extsock_event_publisher_t *publisher, const char *event_json)
 {
+    private_extsock_event_usecase_t *this;
+    
     if (!event_json) {
         return EXTSOCK_ERROR_CONFIG_INVALID;
     }
+    
+    /* Container-of 패턴으로 전체 구조체 포인터 계산 */
+    this = (private_extsock_event_usecase_t*)
+        ((char*)publisher - offsetof(private_extsock_event_usecase_t, event_publisher));
     
     EXTSOCK_DBG(2, "Publishing event: %s", event_json);
     
@@ -99,13 +106,13 @@ METHOD(extsock_event_publisher_t, publish_event, extsock_error_t,
 }
 
 METHOD(extsock_event_publisher_t, publish_tunnel_event, extsock_error_t,
-    private_extsock_event_usecase_t *this, const char *tunnel_event_json)
+    extsock_event_publisher_t *publisher, const char *tunnel_event_json)
 {
-    return this->event_publisher.publish_event(&this->event_publisher, tunnel_event_json);
+    return publisher->publish_event(publisher, tunnel_event_json);
 }
 
 METHOD(extsock_event_publisher_t, destroy_publisher, void,
-    private_extsock_event_usecase_t *this)
+    extsock_event_publisher_t *publisher)
 {
     // Publisher는 event_usecase의 일부이므로 별도 정리 불필요
 }
