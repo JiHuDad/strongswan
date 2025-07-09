@@ -69,10 +69,13 @@ static char* json_array_to_comma_separated_string(cJSON *json_array)
         return strdup("%any");
     }
 
+    // 🔴 HIGH PRIORITY: 안전한 메모리 할당
     char *str_result = malloc(result.len + 1);
     if (!str_result) {
         chunk_free(&result);
-        return strdup("%any");
+        // malloc 실패 시 fallback 문자열도 안전하게 할당
+        char *fallback = strdup("%any");
+        return fallback;  // strdup이 실패하면 NULL 반환 (적절한 에러 처리)
     }
     memcpy(str_result, result.ptr, result.len);
     str_result[result.len] = '\0';

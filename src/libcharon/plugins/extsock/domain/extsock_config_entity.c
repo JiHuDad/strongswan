@@ -73,14 +73,26 @@ METHOD(extsock_config_entity_t, validate, bool,
     
     // 기본 검증 수행
     if (!this->name || strlen(this->name) == 0) {
-        this->validation_error = strdup("Connection name is required");
+        // 🔴 HIGH PRIORITY: 안전한 메모리 할당 체크
+        char *error_msg = strdup("Connection name is required");
+        if (!error_msg) {
+            this->validation_error = NULL;  // 메모리 할당 실패 시 NULL로 설정
+        } else {
+            this->validation_error = error_msg;
+        }
         this->is_valid = FALSE;
         return FALSE;
     }
     
     // 연결 이름 길이 검증
     if (strlen(this->name) > 64) {
-        this->validation_error = strdup("Connection name too long (max 64 characters)");
+        // 🔴 HIGH PRIORITY: 안전한 메모리 할당 체크
+        char *error_msg = strdup("Connection name too long (max 64 characters)");
+        if (!error_msg) {
+            this->validation_error = NULL;
+        } else {
+            this->validation_error = error_msg;
+        }
         this->is_valid = FALSE;
         return FALSE;
     }
@@ -88,7 +100,13 @@ METHOD(extsock_config_entity_t, validate, bool,
     // 특수 문자 검증
     for (char *p = this->name; *p; p++) {
         if (!isalnum(*p) && *p != '_' && *p != '-') {
-            this->validation_error = strdup("Connection name contains invalid characters");
+            // 🔴 HIGH PRIORITY: 안전한 메모리 할당 체크
+            char *error_msg = strdup("Connection name contains invalid characters");
+            if (!error_msg) {
+                this->validation_error = NULL;
+            } else {
+                this->validation_error = error_msg;
+            }
             this->is_valid = FALSE;
             return FALSE;
         }
@@ -182,6 +200,16 @@ extsock_config_entity_t *extsock_config_entity_create(const char *name,
 {
     private_extsock_config_entity_t *this;
 
+    // 🔴 HIGH PRIORITY: 안전한 이름 복사
+    char *safe_name = NULL;
+    if (name) {
+        safe_name = strdup(name);
+        if (!safe_name) {
+            // strdup 실패 시 객체 생성 실패
+            return NULL;
+        }
+    }
+
     INIT(this,
         .public = {
             .get_name = _get_name,
@@ -190,7 +218,7 @@ extsock_config_entity_t *extsock_config_entity_create(const char *name,
             .clone_ = _clone_,
             .destroy = _destroy,
         },
-        .name = name ? strdup(name) : NULL,
+        .name = safe_name,
         .is_valid = FALSE,
         .validation_error = NULL,
         .cached_peer_cfg = NULL,

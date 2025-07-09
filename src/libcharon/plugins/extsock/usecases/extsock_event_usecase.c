@@ -63,8 +63,9 @@ METHOD(extsock_event_usecase_t, handle_child_updown, void,
     
     // 상태 이름을 문자열로 변환
     char ike_state[32], child_state[32];
-    snprintf(ike_state, sizeof(ike_state), "%d", ike_sa->get_state(ike_sa));
-    snprintf(child_state, sizeof(child_state), "%d", child_sa->get_state(child_sa));
+    // 🟠 LOW-MEDIUM PRIORITY: 안전한 문자열 포맷팅
+    EXTSOCK_SAFE_SNPRINTF(ike_state, sizeof(ike_state), "%d", ike_sa->get_state(ike_sa));
+    EXTSOCK_SAFE_SNPRINTF(child_state, sizeof(child_state), "%d", child_sa->get_state(child_sa));
     cJSON_AddStringToObject(event_json, "ike_sa_state", ike_state);
     cJSON_AddStringToObject(event_json, "child_sa_state", child_state);
 
@@ -133,8 +134,9 @@ METHOD(listener_t, ike_updown, bool,
         
         char event_json[256];
         char state_str[32];
-        snprintf(state_str, sizeof(state_str), "%d", ike_sa->get_state(ike_sa));
-        snprintf(event_json, sizeof(event_json),
+        // 🟠 LOW-MEDIUM PRIORITY: 안전한 문자열 포맷팅
+        EXTSOCK_SAFE_SNPRINTF(state_str, sizeof(state_str), "%d", ike_sa->get_state(ike_sa));
+        EXTSOCK_SAFE_SNPRINTF(event_json, sizeof(event_json),
                 "{\"event\":\"ike_sa_%s\",\"ike_sa_name\":\"%s\",\"state\":\"%s\"}",
                 up ? "up" : "down", ike_name, state_str);
         

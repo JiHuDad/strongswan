@@ -46,6 +46,11 @@ struct private_extsock_strongswan_adapter_t {
  */
 static extsock_error_t start_dpd_internal(const char *ike_sa_name)
 {
+    // 🔴 HIGH PRIORITY: NULL 체크 강화
+    EXTSOCK_CHECK_NULL_RET(ike_sa_name, EXTSOCK_ERROR_CONFIG_INVALID);
+    EXTSOCK_CHECK_NULL_RET(charon, EXTSOCK_ERROR_STRONGSWAN_API);
+    EXTSOCK_CHECK_NULL_RET(charon->ike_sa_manager, EXTSOCK_ERROR_STRONGSWAN_API);
+    
     ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
         charon->ike_sa_manager, (char*)ike_sa_name, ID_MATCH_PERFECT);
     if (!ike_sa) {
@@ -54,7 +59,14 @@ static extsock_error_t start_dpd_internal(const char *ike_sa_name)
     }
     
     EXTSOCK_DBG(1, "start_dpd: Starting DPD for IKE_SA '%s'", ike_sa_name);
-    ike_dpd_t *dpd = ike_dpd_create(TRUE);
+    
+    // 🟡 MEDIUM PRIORITY: strongSwan API 안전 호출
+    ike_dpd_t *dpd = EXTSOCK_SAFE_STRONGSWAN_CREATE(ike_dpd_create, TRUE);
+    if (!dpd) {
+        charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
+        return EXTSOCK_ERROR_STRONGSWAN_API;
+    }
+    
     ike_sa->queue_task(ike_sa, (task_t*)dpd);
     charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
     
@@ -99,9 +111,11 @@ METHOD(extsock_config_repository_t, destroy_repository, void,
 METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     private_extsock_strongswan_adapter_t *this, peer_cfg_t *peer_cfg)
 {
-    if (!peer_cfg) {
-        return EXTSOCK_ERROR_CONFIG_INVALID;
-    }
+    // 🔴 HIGH PRIORITY: NULL 체크 강화
+    EXTSOCK_CHECK_NULL_RET(this, EXTSOCK_ERROR_CONFIG_INVALID);
+    EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
+    EXTSOCK_CHECK_NULL_RET(this->peer_cfgs_mutex, EXTSOCK_ERROR_STRONGSWAN_API);
+    EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
     
     this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
@@ -112,12 +126,18 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     child_cfg_t *current_child;
     if (child_enum) {
         while (child_enum->enumerate(child_enum, &current_child)) {
-            if (current_child->get_start_action(current_child) == ACTION_START) {
+            if (current_child && current_child->get_start_action(current_child) == ACTION_START) {
                 EXTSOCK_DBG(1, "Initiating CHILD_SA '%s' for peer '%s'",
                            current_child->get_name(current_child), peer_cfg->get_name(peer_cfg));
-                charon->controller->initiate(charon->controller,
-                                           peer_cfg, current_child,
-                                           NULL, NULL, 0, 0, FALSE);
+                
+                // 🟡 MEDIUM PRIORITY: charon->controller 안전성 체크
+                if (charon && charon->controller) {
+                    charon->controller->initiate(charon->controller,
+                                               peer_cfg, current_child,
+                                               NULL, NULL, 0, 0, FALSE);
+                } else {
+                    EXTSOCK_DBG(1, "Warning: charon->controller not available");
+                }
             }
         }
         child_enum->destroy(child_enum);
