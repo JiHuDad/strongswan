@@ -171,11 +171,20 @@ static extsock_error_t process_single_connection(private_extsock_config_usecase_
     extsock_error_t result = this->strongswan_adapter->add_peer_config(this->strongswan_adapter, peer_cfg);
     
     if (result == EXTSOCK_SUCCESS) {
-        // 성공 이벤트 발행
+        // HIGH PRIORITY: 버퍼 오버플로우 방지
         if (this->event_publisher) {
-            char event_json[256];
-            snprintf(event_json, sizeof(event_json),
-                "{\"event\":\"config_applied\",\"connection\":\"%s\"}", conn_name_str);
+            char event_json[512];  // 버퍼 크기 증가
+            size_t name_len = EXTSOCK_SAFE_STRLEN(conn_name_str);
+            if (name_len > 400) {  // 안전한 길이 체크 (여유 공간 고려)
+                EXTSOCK_DBG(1, "Connection name too long for event JSON, truncating");
+                char safe_name[401];
+                EXTSOCK_SAFE_STRNCPY(safe_name, conn_name_str, sizeof(safe_name));
+                EXTSOCK_SAFE_SNPRINTF(event_json, sizeof(event_json),
+                    "{\"event\":\"config_applied\",\"connection\":\"%s\"}", safe_name);
+            } else {
+                EXTSOCK_SAFE_SNPRINTF(event_json, sizeof(event_json),
+                    "{\"event\":\"config_applied\",\"connection\":\"%s\"}", conn_name_str);
+            }
             this->event_publisher->publish_event(this->event_publisher, event_json);
         }
     }

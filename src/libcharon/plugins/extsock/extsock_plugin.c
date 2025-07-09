@@ -11,6 +11,7 @@
 
 #include <daemon.h>
 #include <threading/thread.h>
+#include <signal.h>  // SIGPIPE 처리를 위해 추가
 
 typedef struct private_extsock_plugin_t private_extsock_plugin_t;
 
@@ -149,6 +150,9 @@ METHOD(plugin_t, destroy, void,
 plugin_t *extsock_plugin_create()
 {
     private_extsock_plugin_t *this;
+
+    // SIGPIPE 신호 무시 (소켓 전송 중 크래시 방지)
+    signal(SIGPIPE, SIG_IGN);
 
     INIT(this,
         .public = {

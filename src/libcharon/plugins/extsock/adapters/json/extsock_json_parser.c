@@ -165,7 +165,8 @@ METHOD(extsock_json_parser_t, parse_traffic_selectors, linked_list_t *,
 METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
     private_extsock_json_parser_t *this, cJSON *ike_json)
 {
-    if (!ike_json) return NULL;
+    // HIGH PRIORITY: NULL 체크 강화
+    EXTSOCK_CHECK_NULL_RET_NULL(ike_json);
 
     ike_cfg_create_t ike_create_cfg = {0};
 
@@ -183,14 +184,21 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
         ike_create_cfg.version = IKE_ANY; 
     }
     
-    // 포트 설정 - 기본값 사용
-    ike_create_cfg.local_port = charon->socket->get_port(charon->socket, FALSE);
+    // 포트 설정 - 안전한 포트 가져오기
+    if (charon && charon->socket) {
+        ike_create_cfg.local_port = charon->socket->get_port(charon->socket, FALSE);
+    } else {
+        ike_create_cfg.local_port = IKEV2_UDP_PORT;
+        EXTSOCK_DBG(1, "Warning: charon->socket not available, using default port");
+    }
     ike_create_cfg.remote_port = IKEV2_UDP_PORT;
 
-    // ike_cfg 객체 생성
-    ike_cfg_t *ike_cfg = ike_cfg_create(&ike_create_cfg);
-    free(ike_create_cfg.local);
-    free(ike_create_cfg.remote);
+    // HIGH PRIORITY: strongSwan API 안전 호출
+    ike_cfg_t *ike_cfg = EXTSOCK_SAFE_STRONGSWAN_CREATE(ike_cfg_create, &ike_create_cfg);
+    
+    // 메모리 정리
+    EXTSOCK_SAFE_FREE(ike_create_cfg.local);
+    EXTSOCK_SAFE_FREE(ike_create_cfg.remote);
 
     if (!ike_cfg) {
         EXTSOCK_DBG(1, "Failed to create ike_cfg");
@@ -203,11 +211,14 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
     if (ike_proposals) {
         proposal_t *prop;
         while (ike_proposals->remove_first(ike_proposals, (void**)&prop) == SUCCESS) {
-            ike_cfg->add_proposal(ike_cfg, prop);
+            if (prop) {  // NULL 체크 추가
+                ike_cfg->add_proposal(ike_cfg, prop);
+            }
         }
         ike_proposals->destroy(ike_proposals);
     }
-     return ike_cfg;
+    
+    return ike_cfg;
 }
 
 
@@ -258,9 +269,10 @@ static lifetime_cfg_t* parse_child_lifetime(cJSON *child_json)
 METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
     private_extsock_json_parser_t *this, cJSON *auth_json, bool is_local)
 {
-    if (!auth_json) return NULL;
+    // HIGH PRIORITY: NULL 체크 강화
+    EXTSOCK_CHECK_NULL_RET_NULL(auth_json);
 
-    auth_cfg_t *auth_cfg = auth_cfg_create();
+    auth_cfg_t *auth_cfg = EXTSOCK_SAFE_STRONGSWAN_CREATE(auth_cfg_create);
     if (!auth_cfg) {
         EXTSOCK_DBG(1, "Failed to create auth_cfg");
         return NULL;
@@ -270,38 +282,45 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
     cJSON *j_id = cJSON_GetObjectItem(auth_json, "id");
     cJSON *j_secret = cJSON_GetObjectItem(auth_json, "secret");
 
-    if (j_auth_type && cJSON_IsString(j_auth_type)) {
+    if (j_auth_type && cJSON_IsString(j_auth_type) && j_auth_type->valuestring) {
         const char *auth_type_str = j_auth_type->valuestring;
         if (streq(auth_type_str, "psk")) {
             auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
             identification_t *psk_identity = NULL;
-            if (j_id && cJSON_IsString(j_id)) {
-                psk_identity = identification_create_from_string(j_id->valuestring);
-                auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, identification_create_from_string(j_id->valuestring));
+            
+            if (j_id && cJSON_IsString(j_id) && j_id->valuestring) {
+                // HIGH PRIORITY: strongSwan API 안전 호출
+                psk_identity = EXTSOCK_SAFE_STRONGSWAN_CREATE(identification_create_from_string, j_id->valuestring);
+                if (psk_identity) {
+                    identification_t *auth_identity = EXTSOCK_SAFE_STRONGSWAN_CREATE(identification_create_from_string, j_id->valuestring);
+                    if (auth_identity) {
+                        auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, auth_identity);
+                    }
+                }
             } else {
-                psk_identity = identification_create_from_string("%any");
+                psk_identity = EXTSOCK_SAFE_STRONGSWAN_CREATE(identification_create_from_string, "%any");
             }
 
             if (psk_identity) {
-                if (j_secret && cJSON_IsString(j_secret)) {
+                if (j_secret && cJSON_IsString(j_secret) && j_secret->valuestring) {
                     const char *secret_str = j_secret->valuestring;
                     chunk_t secret_chunk = chunk_from_str((char*)secret_str);
-                    shared_key_t *psk_key = shared_key_create(SHARED_IKE, chunk_clone(secret_chunk));
-                    if (psk_key) {
+                    shared_key_t *psk_key = EXTSOCK_SAFE_STRONGSWAN_CREATE(shared_key_create, SHARED_IKE, chunk_clone(secret_chunk));
+                    if (psk_key && this->creds) {
                         this->creds->add_shared(this->creds, psk_key, psk_identity, NULL);
                     } else {
                         EXTSOCK_DBG(1, "Failed to create PSK key for ID: %s", j_id ? j_id->valuestring : "%any");
-                        psk_identity->destroy(psk_identity);
+                        if (psk_identity) psk_identity->destroy(psk_identity);
                     }
                 } else {
                     EXTSOCK_DBG(1, "PSK auth specified but 'secret' missing for ID: %s", j_id ? j_id->valuestring : "%any");
-                    psk_identity->destroy(psk_identity);
+                    if (psk_identity) psk_identity->destroy(psk_identity);
                 }
             }
         } else if (streq(auth_type_str, "pubkey")) {
             auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
-            if (j_id && cJSON_IsString(j_id)) {
-                identification_t *pubkey_id = identification_create_from_string(j_id->valuestring);
+            if (j_id && cJSON_IsString(j_id) && j_id->valuestring) {
+                identification_t *pubkey_id = EXTSOCK_SAFE_STRONGSWAN_CREATE(identification_create_from_string, j_id->valuestring);
                 if (pubkey_id) {
                     auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, pubkey_id);
                 }

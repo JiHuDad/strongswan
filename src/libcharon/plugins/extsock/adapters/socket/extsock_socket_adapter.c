@@ -109,6 +109,11 @@ static void* socket_thread_function(void *data)
         
         EXTSOCK_DBG(2, "Client connected");
         
+        // MEDIUM PRIORITY: 스레드 안전성 - 뮤텍스로 클라이언트 소켓 보호
+        if (this->mutex) {
+            this->mutex->lock(this->mutex);
+        }
+        
         // 데이터 수신 및 처리
         while (this->running) {
             ssize_t bytes_received = recv(this->client_socket, buffer, sizeof(buffer) - 1, 0);
@@ -125,13 +130,17 @@ static void* socket_thread_function(void *data)
             EXTSOCK_DBG(2, "Received command: %s", buffer);
             
             // 명령 처리
-            if (this->command_handler) {
+            if (this->command_handler && this->cfg_usecase) {
                 this->command_handler->handle_command(this->cfg_usecase, buffer);
             }
         }
         
         close(this->client_socket);
         this->client_socket = -1;
+        
+        if (this->mutex) {
+            this->mutex->unlock(this->mutex);
+        }
     }
     
     return NULL;
@@ -140,22 +149,38 @@ static void* socket_thread_function(void *data)
 METHOD(extsock_event_publisher_t, publish_event, extsock_error_t,
     private_extsock_socket_adapter_t *this, const char *event_json)
 {
-    if (!event_json) {
-        return EXTSOCK_ERROR_CONFIG_INVALID;
+    // HIGH PRIORITY: NULL 체크 강화
+    EXTSOCK_CHECK_NULL_RET(this, EXTSOCK_ERROR_CONFIG_INVALID);
+    EXTSOCK_CHECK_NULL_RET(event_json, EXTSOCK_ERROR_CONFIG_INVALID);
+    
+    if (!this->mutex) {
+        EXTSOCK_DBG(1, "Mutex not available for socket operations");
+        return EXTSOCK_ERROR_STRONGSWAN_API;
     }
     
     this->mutex->lock(this->mutex);
+    
+    // MEDIUM PRIORITY: 스레드 안전성 강화
     if (this->client_socket != -1) {
-        ssize_t sent = send(this->client_socket, event_json, strlen(event_json), 0);
+        // SIGPIPE 방지를 위한 MSG_NOSIGNAL 플래그 사용
+        ssize_t sent = send(this->client_socket, event_json, strlen(event_json), MSG_NOSIGNAL);
         if (sent == -1) {
-            EXTSOCK_DBG(1, "Failed to send event: %s", strerror(errno));
+            if (errno == EPIPE || errno == ECONNRESET) {
+                EXTSOCK_DBG(2, "Client disconnected during send, closing socket");
+                close(this->client_socket);
+                this->client_socket = -1;
+            } else {
+                EXTSOCK_DBG(1, "Failed to send event: %s", strerror(errno));
+            }
             this->mutex->unlock(this->mutex);
             return EXTSOCK_ERROR_STRONGSWAN_API;
         }
         EXTSOCK_DBG(2, "Event sent: %s", event_json);
+    } else {
+        EXTSOCK_DBG(2, "No client connected, event not sent");
     }
-    this->mutex->unlock(this->mutex);
     
+    this->mutex->unlock(this->mutex);
     return EXTSOCK_SUCCESS;
 }
 
@@ -186,7 +211,15 @@ METHOD(extsock_socket_adapter_t, start_listening, thread_t *,
 METHOD(extsock_socket_adapter_t, stop_listening, void,
     private_extsock_socket_adapter_t *this)
 {
+    // MEDIUM PRIORITY: 안전한 소켓 종료
+    if (!this) return;
+    
     this->running = FALSE;
+    
+    if (this->mutex) {
+        this->mutex->lock(this->mutex);
+    }
+    
     if (this->server_socket != -1) {
         close(this->server_socket);
         this->server_socket = -1;
@@ -195,15 +228,19 @@ METHOD(extsock_socket_adapter_t, stop_listening, void,
         close(this->client_socket);
         this->client_socket = -1;
     }
+    
+    if (this->mutex) {
+        this->mutex->unlock(this->mutex);
+    }
 }
 
 METHOD(extsock_socket_adapter_t, destroy, void,
     private_extsock_socket_adapter_t *this)
 {
+    if (!this) return;
+    
     this->public.stop_listening(&this->public);
-    if (this->mutex) {
-        this->mutex->destroy(this->mutex);
-    }
+    EXTSOCK_SAFE_DESTROY(this->mutex);
     free(this);
 }
 

@@ -88,9 +88,9 @@ METHOD(extsock_event_publisher_t, publish_event, extsock_error_t,
 {
     private_extsock_event_usecase_t *this;
     
-    if (!event_json) {
-        return EXTSOCK_ERROR_CONFIG_INVALID;
-    }
+    // HIGH PRIORITY: NULL 포인터 체크 강화
+    EXTSOCK_CHECK_NULL_RET(publisher, EXTSOCK_ERROR_CONFIG_INVALID);
+    EXTSOCK_CHECK_NULL_RET(event_json, EXTSOCK_ERROR_CONFIG_INVALID);
     
     /* Container-of 패턴으로 전체 구조체 포인터 계산 */
     this = (private_extsock_event_usecase_t*)
@@ -108,12 +108,15 @@ METHOD(extsock_event_publisher_t, publish_event, extsock_error_t,
 METHOD(extsock_event_publisher_t, publish_tunnel_event, extsock_error_t,
     extsock_event_publisher_t *publisher, const char *tunnel_event_json)
 {
+    EXTSOCK_CHECK_NULL_RET(publisher, EXTSOCK_ERROR_CONFIG_INVALID);
     return publisher->publish_event(publisher, tunnel_event_json);
 }
 
 METHOD(extsock_event_publisher_t, destroy_publisher, void,
     extsock_event_publisher_t *publisher)
 {
+    // NULL 체크 추가 (안전성 강화)
+    if (!publisher) return;
     // Publisher는 event_usecase의 일부이므로 별도 정리 불필요
 }
 
