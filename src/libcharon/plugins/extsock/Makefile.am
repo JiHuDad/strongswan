@@ -31,6 +31,8 @@ libstrongswan_extsock_la_SOURCES = \
     adapters/socket/extsock_socket_adapter.c \
     adapters/strongswan/extsock_strongswan_adapter.h \
     adapters/strongswan/extsock_strongswan_adapter.c \
+    adapters/crypto/extsock_cert_loader.h \
+    adapters/crypto/extsock_cert_loader.c \
     domain/extsock_config_entity.h \
     domain/extsock_config_entity.c \
     usecases/extsock_config_usecase.h \

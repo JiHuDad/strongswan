@@ -8,9 +8,60 @@
 
 ## 주요 기능
 - 외부 프로그램이 유닉스 도메인 소켓(`/tmp/strongswan_extsock.sock`)으로 명령을 전송
-- PSK/인증서 기반 인증, 여러 CHILD_SA, IKE/ESP proposal 등 다양한 설정 지원
+- **PSK/인증서 기반 인증**, 여러 CHILD_SA, IKE/ESP proposal 등 다양한 설정 지원
 - **터널(Child SA) up/down 이벤트를 외부로 JSON 포맷으로 알림** (SPD/SAD 이벤트는 지원하지 않음)
 - DPD(Dead Peer Detection) 트리거 명령 지원
+
+---
+
+## 📋 지원되는 인증 방식
+
+### 1. PSK (Pre-Shared Key) 인증
+```json
+{
+  "local_auth": {
+    "auth": "psk",
+    "id": "client@example.com",
+    "secret": "supersecret123"
+  }
+}
+```
+
+### 2. 공개키 인증 (기본)
+```json
+{
+  "local_auth": {
+    "auth": "pubkey",
+    "id": "CN=client.example.com"
+  }
+}
+```
+
+### 3. 인증서 기반 인증 (✨ NEW!)
+```json
+{
+  "local_auth": {
+    "auth": "cert",
+    "id": "C=KR, O=Company, CN=client.example.com",
+    "cert": "/etc/ipsec.d/certs/client.crt",
+    "private_key": "/etc/ipsec.d/private/client.key",
+    "private_key_passphrase": "key_password",
+    "ca_cert": "/etc/ipsec.d/cacerts/ca.crt"
+  },
+  "remote_auth": {
+    "auth": "cert",
+    "id": "C=KR, O=Company, CN=server.example.com",
+    "ca_cert": "/etc/ipsec.d/cacerts/ca.crt"
+  }
+}
+```
+
+#### 인증서 필드 설명
+- `cert`: 클라이언트/서버 인증서 파일 경로 (PEM/DER 형식)
+- `private_key`: 개인키 파일 경로 (PEM/PKCS#8 형식)
+- `private_key_passphrase`: 암호화된 개인키의 패스워드 (선택사항)
+- `ca_cert`: CA 인증서 파일 경로 (신뢰 체인 검증용)
+- `id`: 인증서 subject 또는 사용자 정의 ID (선택사항)
 
 ---
 

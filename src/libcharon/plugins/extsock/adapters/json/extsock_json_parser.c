@@ -4,17 +4,23 @@
 
 #include "extsock_json_parser.h"
 #include "../../common/extsock_common.h"
-#include "../../domain/extsock_config_entity.h"
+#include "../crypto/extsock_cert_loader.h"
 
-#include <cjson/cJSON.h>
 #include <daemon.h>
+#include <config/ike_cfg.h>
+#include <config/peer_cfg.h>
+#include <config/child_cfg.h>
+#include <crypto/proposal/proposal.h>
+#include <networking/host.h>
+#include <credentials/sets/mem_cred.h>
+#include <selectors/traffic_selector.h>
+#include <cjson/cJSON.h>
 #include <library.h>
 #include <config/ike_cfg.h>
 #include <config/peer_cfg.h>
 #include <config/child_cfg.h>
 #include <credentials/auth_cfg.h>
 #include <credentials/keys/shared_key.h>
-#include <credentials/sets/mem_cred.h>
 #include <utils/identification.h>
 #include <utils/chunk.h>
 #include <selectors/traffic_selector.h>
@@ -34,9 +40,14 @@ struct private_extsock_json_parser_t {
     extsock_json_parser_t public;
     
     /**
-     * 인메모리 자격증명 세트 (PSK 저장용)
+     * 인메모리 자격증명 세트 (PSK/인증서 저장용)
      */
     mem_cred_t *creds;
+    
+    /**
+     * 인증서 로더
+     */
+    extsock_cert_loader_t *cert_loader;
 };
 
 /**
@@ -328,6 +339,96 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                     auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, pubkey_id);
                 }
             }
+        } else if (streq(auth_type_str, "cert")) {
+            // 인증서 기반 인증
+            auth_cfg->add(auth_cfg, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
+            
+            // JSON에서 인증서 관련 필드들 추출
+            cJSON *j_cert = cJSON_GetObjectItem(auth_json, "cert");
+            cJSON *j_private_key = cJSON_GetObjectItem(auth_json, "private_key");
+            cJSON *j_private_key_passphrase = cJSON_GetObjectItem(auth_json, "private_key_passphrase");
+            cJSON *j_ca_cert = cJSON_GetObjectItem(auth_json, "ca_cert");
+            
+            certificate_t *cert = NULL;
+            private_key_t *private_key = NULL;
+            certificate_t *ca_cert = NULL;
+            
+            // 인증서 파일 로딩
+            if (j_cert && cJSON_IsString(j_cert) && j_cert->valuestring) {
+                cert = this->cert_loader->load_certificate(this->cert_loader, j_cert->valuestring);
+                if (cert) {
+                    EXTSOCK_DBG(2, "Certificate loaded from: %s", j_cert->valuestring);
+                    
+                    // 인증서에서 identity 추출 (ID가 별도 지정되지 않은 경우)
+                    if (!j_id || !cJSON_IsString(j_id) || !j_id->valuestring) {
+                        identification_t *cert_subject = cert->get_subject(cert);
+                        if (cert_subject) {
+                            auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, cert_subject->clone(cert_subject));
+                            EXTSOCK_DBG(3, "Using certificate subject as identity: %Y", cert_subject);
+                        }
+                    } else {
+                        identification_t *specified_id = EXTSOCK_SAFE_STRONGSWAN_CREATE(identification_create_from_string, j_id->valuestring);
+                        if (specified_id) {
+                            auth_cfg->add(auth_cfg, AUTH_RULE_IDENTITY, specified_id);
+                            EXTSOCK_DBG(3, "Using specified identity: %Y", specified_id);
+                        }
+                    }
+                    
+                    // credential store에 인증서 추가
+                    this->creds->add_cert(this->creds, TRUE, cert);
+                } else {
+                    EXTSOCK_DBG(1, "Failed to load certificate from: %s", j_cert->valuestring);
+                }
+            }
+            
+            // 개인키 파일 로딩 (로컬 인증에만 필요)
+            if (is_local && j_private_key && cJSON_IsString(j_private_key) && j_private_key->valuestring) {
+                const char *passphrase = NULL;
+                if (j_private_key_passphrase && cJSON_IsString(j_private_key_passphrase) && j_private_key_passphrase->valuestring) {
+                    passphrase = j_private_key_passphrase->valuestring;
+                }
+                
+                private_key = this->cert_loader->load_private_key(this->cert_loader, 
+                                                                  j_private_key->valuestring, passphrase);
+                if (private_key) {
+                    EXTSOCK_DBG(2, "Private key loaded from: %s", j_private_key->valuestring);
+                    
+                    // 개인키와 인증서 매칭 확인
+                    if (cert && !this->cert_loader->verify_key_cert_match(this->cert_loader, private_key, cert)) {
+                        EXTSOCK_DBG(1, "WARNING: Private key and certificate do not match!");
+                    }
+                    
+                    // credential store에 개인키 추가
+                    this->creds->add_key(this->creds, private_key);
+                } else {
+                    EXTSOCK_DBG(1, "Failed to load private key from: %s", j_private_key->valuestring);
+                }
+            }
+            
+            // CA 인증서 로딩
+            if (j_ca_cert && cJSON_IsString(j_ca_cert) && j_ca_cert->valuestring) {
+                ca_cert = this->cert_loader->load_certificate(this->cert_loader, j_ca_cert->valuestring);
+                if (ca_cert) {
+                    EXTSOCK_DBG(2, "CA certificate loaded from: %s", j_ca_cert->valuestring);
+                    
+                    // 인증서 체인 검증 (인증서가 있는 경우)
+                    if (cert && !this->cert_loader->verify_certificate_chain(this->cert_loader, cert, ca_cert)) {
+                        EXTSOCK_DBG(1, "WARNING: Certificate chain validation failed!");
+                    }
+                    
+                    // credential store에 CA 인증서 추가
+                    this->creds->add_cert(this->creds, TRUE, ca_cert);
+                    
+                    // auth_cfg에 CA 규칙 추가
+                    auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert->get_ref(ca_cert));
+                } else {
+                    EXTSOCK_DBG(1, "Failed to load CA certificate from: %s", j_ca_cert->valuestring);
+                }
+            }
+            
+            if (!cert && !ca_cert) {
+                EXTSOCK_DBG(1, "Certificate authentication specified but no certificate files provided");
+            }
         } else {
             EXTSOCK_DBG(1, "Unsupported auth type: %s", auth_type_str);
             auth_cfg->destroy(auth_cfg);
@@ -438,6 +539,9 @@ METHOD(extsock_json_parser_t, parse_config_entity, extsock_config_entity_t *,
 METHOD(extsock_json_parser_t, destroy, void,
     private_extsock_json_parser_t *this)
 {
+    if (this->cert_loader) {
+        this->cert_loader->destroy(this->cert_loader);
+    }
     free(this);
 }
 
@@ -459,11 +563,23 @@ extsock_json_parser_t *extsock_json_parser_create()
             .destroy = _destroy,
         },
         .creds = mem_cred_create(),
+        .cert_loader = extsock_cert_loader_create(),
     );
 
     if (this->creds) {
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
     }
+    
+    if (!this->cert_loader) {
+        EXTSOCK_DBG(1, "Failed to create certificate loader");
+        if (this->creds) {
+            lib->credmgr->remove_set(lib->credmgr, &this->creds->set);
+            this->creds->destroy(this->creds);
+        }
+        free(this);
+        return NULL;
+    }
 
+    EXTSOCK_DBG(2, "JSON parser created with certificate support");
     return &this->public;
 } 
