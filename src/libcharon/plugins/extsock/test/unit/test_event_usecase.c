@@ -167,7 +167,7 @@ void teardown_event_usecase_test(void)
 }
 
 /**
- * Child SA Up 이벤트 처리 테스트
+ * Child SA Up 이벤트 처리 테스트 (통합 터널 이벤트 확인)
  */
 START_TEST(test_handle_child_sa_up)
 {
@@ -181,29 +181,42 @@ START_TEST(test_handle_child_sa_up)
     // When
     event_usecase->handle_child_updown(event_usecase, ike_sa, child_sa, TRUE);
     
-    // Then
+    // Then - 통합된 터널 이벤트 1개만 전송되어야 함
     mock_socket_adapter_t *mock_adapter = (mock_socket_adapter_t*)socket_adapter;
     ck_assert_int_eq(mock_adapter->send_count, 1);
     ck_assert_ptr_nonnull(mock_adapter->last_event_sent);
     
-    // JSON 이벤트 내용 검증
-    cJSON *event_json = cJSON_Parse(mock_adapter->last_event_sent);
-    ck_assert_ptr_nonnull(event_json);
+    // 전송된 이벤트는 터널 이벤트여야 함
+    cJSON *tunnel_json = cJSON_Parse(mock_adapter->last_event_sent);
+    ck_assert_ptr_nonnull(tunnel_json);
     
-    cJSON *event_type = cJSON_GetObjectItem(event_json, "event");
+    cJSON *event_type = cJSON_GetObjectItem(tunnel_json, "event");
     ck_assert_ptr_nonnull(event_type);
-    ck_assert_str_eq(cJSON_GetStringValue(event_type), "child_sa_up");
+    ck_assert_str_eq(cJSON_GetStringValue(event_type), "tunnel_up");
     
-    cJSON *ike_sa_name = cJSON_GetObjectItem(event_json, "ike_sa_name");
+    cJSON *ike_sa_name = cJSON_GetObjectItem(tunnel_json, "ike_sa_name");
     ck_assert_ptr_nonnull(ike_sa_name);
     ck_assert_str_eq(cJSON_GetStringValue(ike_sa_name), "test-connection");
     
-    cJSON *child_sa_name = cJSON_GetObjectItem(event_json, "child_sa_name");
+    cJSON *child_sa_name = cJSON_GetObjectItem(tunnel_json, "child_sa_name");
     ck_assert_ptr_nonnull(child_sa_name);
     ck_assert_str_eq(cJSON_GetStringValue(child_sa_name), "child-tunnel");
     
+    // 기본 상태 정보 확인
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "ike_sa_state"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "child_sa_state"));
+    
+    // 터널 이벤트 특유의 필드들 확인
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "spi"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "proto"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "mode"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "src"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "dst"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "local_ts"));
+    ck_assert_ptr_nonnull(cJSON_GetObjectItem(tunnel_json, "remote_ts"));
+    
     // 정리
-    cJSON_Delete(event_json);
+    cJSON_Delete(tunnel_json);
     ike_sa->destroy(ike_sa);
     child_sa->destroy(child_sa);
     socket_adapter->destroy(socket_adapter);
@@ -211,7 +224,7 @@ START_TEST(test_handle_child_sa_up)
 END_TEST
 
 /**
- * Child SA Down 이벤트 처리 테스트
+ * Child SA Down 이벤트 처리 테스트 (통합 터널 이벤트 확인)
  */
 START_TEST(test_handle_child_sa_down)
 {
@@ -225,21 +238,21 @@ START_TEST(test_handle_child_sa_down)
     // When
     event_usecase->handle_child_updown(event_usecase, ike_sa, child_sa, FALSE);
     
-    // Then
+    // Then - 통합된 터널 이벤트 1개만 전송되어야 함
     mock_socket_adapter_t *mock_adapter = (mock_socket_adapter_t*)socket_adapter;
     ck_assert_int_eq(mock_adapter->send_count, 1);
     ck_assert_ptr_nonnull(mock_adapter->last_event_sent);
     
-    // JSON 이벤트 내용 검증
-    cJSON *event_json = cJSON_Parse(mock_adapter->last_event_sent);
-    ck_assert_ptr_nonnull(event_json);
+    // 전송된 이벤트는 터널 이벤트여야 함
+    cJSON *tunnel_json = cJSON_Parse(mock_adapter->last_event_sent);
+    ck_assert_ptr_nonnull(tunnel_json);
     
-    cJSON *event_type = cJSON_GetObjectItem(event_json, "event");
+    cJSON *event_type = cJSON_GetObjectItem(tunnel_json, "event");
     ck_assert_ptr_nonnull(event_type);
-    ck_assert_str_eq(cJSON_GetStringValue(event_type), "child_sa_down");
+    ck_assert_str_eq(cJSON_GetStringValue(event_type), "tunnel_down");
     
     // 정리
-    cJSON_Delete(event_json);
+    cJSON_Delete(tunnel_json);
     ike_sa->destroy(ike_sa);
     child_sa->destroy(child_sa);
     socket_adapter->destroy(socket_adapter);
@@ -445,7 +458,7 @@ START_TEST(test_handle_multiple_child_events)
     event_usecase->handle_child_updown(event_usecase, ike_sa, child_sa1, TRUE);
     event_usecase->handle_child_updown(event_usecase, ike_sa, child_sa2, TRUE);
     
-    // Then
+    // Then - 각 Child SA마다 1개씩 총 2개 이벤트
     mock_socket_adapter_t *mock_adapter = (mock_socket_adapter_t*)socket_adapter;
     ck_assert_int_eq(mock_adapter->send_count, 2);
     
@@ -453,6 +466,105 @@ START_TEST(test_handle_multiple_child_events)
     ike_sa->destroy(ike_sa);
     child_sa1->destroy(child_sa1);
     child_sa2->destroy(child_sa2);
+    socket_adapter->destroy(socket_adapter);
+}
+END_TEST
+
+/**
+ * 터널 이벤트 직접 발행 테스트
+ */
+START_TEST(test_event_publisher_publish_tunnel_event)
+{
+    // Given
+    extsock_socket_adapter_t *socket_adapter = create_mock_socket_adapter();
+    event_usecase->set_socket_adapter(event_usecase, socket_adapter);
+    
+    extsock_event_publisher_t *publisher = event_usecase->get_event_publisher(event_usecase);
+    ck_assert_ptr_nonnull(publisher);
+    
+    const char *tunnel_event = 
+        "{"
+        "\"event\":\"tunnel_up\","
+        "\"ike_sa_name\":\"vpn-conn1\","
+        "\"child_sa_name\":\"child1\","
+        "\"spi\":12345678,"
+        "\"proto\":\"esp\","
+        "\"mode\":\"tunnel\","
+        "\"enc_alg\":\"aes256\","
+        "\"integ_alg\":\"sha256\","
+        "\"src\":\"192.168.1.10\","
+        "\"dst\":\"203.0.113.5\","
+        "\"local_ts\":\"10.0.0.0/24\","
+        "\"remote_ts\":\"10.1.0.0/24\","
+        "\"direction\":\"out\","
+        "\"policy_action\":\"protect\""
+        "}";
+    
+    // When
+    extsock_error_t result = publisher->publish_tunnel_event(publisher, tunnel_event);
+    
+    // Then
+    ck_assert_int_eq(result, EXTSOCK_ERROR_NONE);
+    
+    mock_socket_adapter_t *mock_adapter = (mock_socket_adapter_t*)socket_adapter;
+    ck_assert_int_eq(mock_adapter->send_count, 1);
+    ck_assert_ptr_nonnull(mock_adapter->last_event_sent);
+    ck_assert_str_eq(mock_adapter->last_event_sent, tunnel_event);
+    
+    // 정리
+    socket_adapter->destroy(socket_adapter);
+}
+END_TEST
+
+/**
+ * NULL 터널 이벤트 발행 테스트
+ */
+START_TEST(test_event_publisher_publish_tunnel_event_null)
+{
+    // Given
+    extsock_event_publisher_t *publisher = event_usecase->get_event_publisher(event_usecase);
+    ck_assert_ptr_nonnull(publisher);
+    
+    // When
+    extsock_error_t result = publisher->publish_tunnel_event(publisher, NULL);
+    
+    // Then
+    ck_assert_int_eq(result, EXTSOCK_ERROR_CONFIG_INVALID);
+}
+END_TEST
+
+/**
+ * Child SA rekey 후 터널 이벤트 테스트
+ * (rekey가 발생하면 새로운 Child SA에 대한 tunnel_up 이벤트가 생성되는지 확인)
+ */
+START_TEST(test_child_rekey_generates_tunnel_event)
+{
+    // Given
+    ike_sa_t *ike_sa = create_mock_ike_sa("test-connection", IKE_ESTABLISHED);
+    child_sa_t *new_child_sa = create_mock_child_sa("new-child", CHILD_INSTALLED);
+    
+    extsock_socket_adapter_t *socket_adapter = create_mock_socket_adapter();
+    event_usecase->set_socket_adapter(event_usecase, socket_adapter);
+    
+    // When - Child SA rekey 후 새로운 Child SA UP 시뮬레이션
+    event_usecase->handle_child_updown(event_usecase, ike_sa, new_child_sa, TRUE);
+    
+    // Then - rekey 후 새로운 터널이 UP되었으므로 이벤트가 생성되어야 함
+    mock_socket_adapter_t *mock_adapter = (mock_socket_adapter_t*)socket_adapter;
+    ck_assert_int_eq(mock_adapter->send_count, 1); // 통합된 터널 이벤트 1개
+    
+    // 이벤트가 tunnel_up인지 확인
+    cJSON *last_event_json = cJSON_Parse(mock_adapter->last_event_sent);
+    ck_assert_ptr_nonnull(last_event_json);
+    
+    cJSON *event_type = cJSON_GetObjectItem(last_event_json, "event");
+    ck_assert_ptr_nonnull(event_type);
+    ck_assert_str_eq(cJSON_GetStringValue(event_type), "tunnel_up");
+    
+    // 정리
+    cJSON_Delete(last_event_json);
+    ike_sa->destroy(ike_sa);
+    new_child_sa->destroy(new_child_sa);
     socket_adapter->destroy(socket_adapter);
 }
 END_TEST
@@ -521,6 +633,9 @@ Suite *event_usecase_suite(void)
     tc_advanced = tcase_create("Advanced");
     tcase_add_checked_fixture(tc_advanced, setup_event_usecase_test, teardown_event_usecase_test);
     tcase_add_test(tc_advanced, test_handle_multiple_child_events);
+    tcase_add_test(tc_advanced, test_event_publisher_publish_tunnel_event);
+    tcase_add_test(tc_advanced, test_event_publisher_publish_tunnel_event_null);
+    tcase_add_test(tc_advanced, test_child_rekey_generates_tunnel_event);
     suite_add_tcase(s, tc_advanced);
 
     return s;

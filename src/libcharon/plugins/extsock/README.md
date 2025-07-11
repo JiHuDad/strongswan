@@ -60,7 +60,52 @@ START_DPD vpn-conn1
 
 ## 터널(Child SA) up/down 이벤트 알림 포맷 예시
 
-플러그인은 strongSwan의 CHILD_SA(터널) 상태 변화(up/down)를 감지하여 외부 프로그램에 아래와 같은 JSON 포맷으로 알림을 전송합니다.
+플러그인은 strongSwan의 CHILD_SA(터널) 상태 변화(up/down)를 감지하여 외부 프로그램에 **통합된 터널 이벤트**를 JSON 포맷으로 알림을 전송합니다.
+
+### 통합 터널 이벤트 (기본 상태 + 상세 터널 정보)
+
+Child SA 상태 변화 시 **하나의 통합된 이벤트**가 전송되며, 다음 정보를 모두 포함합니다:
+
+```json
+{
+  "event": "tunnel_up",
+  "ike_sa_name": "vpn-conn1",
+  "child_sa_name": "child1",
+  "ike_sa_state": "5",
+  "child_sa_state": "2",
+  "spi": 12345678,
+  "proto": "esp",
+  "mode": "tunnel",
+  "enc_alg": "unknown",
+  "integ_alg": "unknown",
+  "src": "192.168.1.10",
+  "dst": "203.0.113.5",
+  "local_ts": "10.0.0.0/24",
+  "remote_ts": "10.1.0.0/24",
+  "direction": "out",
+  "policy_action": "protect"
+}
+```
+
+### 이벤트 필드 설명
+
+#### 기본 상태 정보
+- `event`: 이벤트 종류(`tunnel_up`, `tunnel_down`)
+- `ike_sa_name`: IKE_SA 이름
+- `child_sa_name`: Child SA 이름
+- `ike_sa_state`: IKE SA 상태 (숫자)
+- `child_sa_state`: Child SA 상태 (숫자)
+
+#### 터널 상세 정보 (데이터 플레인 설정용)
+- `spi`: SA의 SPI 값
+- `proto`: 프로토콜(예: "esp", "ah")
+- `mode`: 터널 모드("tunnel"/"transport")
+- `enc_alg`: 암호화 알고리즘
+- `integ_alg`: 무결성 알고리즘
+- `src`, `dst`: SA의 소스/목적지 주소
+- `local_ts`, `remote_ts`: 트래픽 선택자(로컬/원격)
+- `direction`: 방향(보통 "out")
+- `policy_action`: 정책(보통 "protect")
 
 ### 1. 터널(Child SA) up 이벤트
 ```json

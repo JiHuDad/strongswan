@@ -8,6 +8,10 @@
 
 #include <daemon.h>
 #include <sa/child_sa.h>
+#include <selectors/traffic_selector.h>
+#include <networking/host.h>
+#include <crypto/proposal/proposal.h>
+#include <collections/enumerator.h>
 #include <cjson/cJSON.h>
 #include <stddef.h>  /* offsetof를 위해 추가 */
 
@@ -50,35 +54,126 @@ METHOD(extsock_event_usecase_t, handle_child_updown, void,
     EXTSOCK_DBG(1, "Child SA '%s' of IKE SA '%s' is %s",
                child_name, ike_name, up ? "UP" : "DOWN");
 
-    // JSON 이벤트 생성 및 전송
-    cJSON *event_json = cJSON_CreateObject();
-    if (!event_json) {
-        EXTSOCK_DBG(1, "Failed to create event JSON object");
+    // 통합된 터널 이벤트 생성 및 전송 (기본 상태 정보 + 터널 상세 정보)
+    cJSON *tunnel_json = cJSON_CreateObject();
+    if (!tunnel_json) {
+        EXTSOCK_DBG(1, "Failed to create tunnel event JSON object");
         return;
     }
 
-    cJSON_AddStringToObject(event_json, "event", up ? "child_sa_up" : "child_sa_down");
-    cJSON_AddStringToObject(event_json, "ike_sa_name", ike_name);
-    cJSON_AddStringToObject(event_json, "child_sa_name", child_name);
-    
-    // 상태 이름을 문자열로 변환
+    // 기본 터널 이벤트 정보
+    cJSON_AddStringToObject(tunnel_json, "event", up ? "tunnel_up" : "tunnel_down");
+    cJSON_AddStringToObject(tunnel_json, "ike_sa_name", ike_name);
+    cJSON_AddStringToObject(tunnel_json, "child_sa_name", child_name);
+
+    // 기본 상태 정보도 포함 (기존 child_sa 이벤트 정보)
     char ike_state[32], child_state[32];
-    // 🟠 LOW-MEDIUM PRIORITY: 안전한 문자열 포맷팅
     EXTSOCK_SAFE_SNPRINTF(ike_state, sizeof(ike_state), "%d", ike_sa->get_state(ike_sa));
     EXTSOCK_SAFE_SNPRINTF(child_state, sizeof(child_state), "%d", child_sa->get_state(child_sa));
-    cJSON_AddStringToObject(event_json, "ike_sa_state", ike_state);
-    cJSON_AddStringToObject(event_json, "child_sa_state", child_state);
+    cJSON_AddStringToObject(tunnel_json, "ike_sa_state", ike_state);
+    cJSON_AddStringToObject(tunnel_json, "child_sa_state", child_state);
 
-    char *event_string = cJSON_Print(event_json);
-    if (event_string) {
+    // Child SA 상세 정보 수집
+    uint32_t spi = 0;
+    char proto_str[16] = "esp";
+    char mode_str[16] = "tunnel";
+    char enc_alg[32] = "unknown";
+    char integ_alg[32] = "unknown";
+    char src_str[64] = "unknown";
+    char dst_str[64] = "unknown";
+    char local_ts[128] = "unknown";
+    char remote_ts[128] = "unknown";
+
+    // SPI 정보 추출
+    if (child_sa) {
+        spi = child_sa->get_spi(child_sa, TRUE); // TRUE = inbound SPI
+        
+        // 프로토콜 정보
+        protocol_id_t protocol = child_sa->get_protocol(child_sa);
+        switch (protocol) {
+            case PROTO_ESP:
+                strncpy(proto_str, "esp", sizeof(proto_str)-1);
+                break;
+            case PROTO_AH:
+                strncpy(proto_str, "ah", sizeof(proto_str)-1);
+                break;
+            default:
+                strncpy(proto_str, "unknown", sizeof(proto_str)-1);
+                break;
+        }
+        
+        // 모드 정보
+        ipsec_mode_t mode = child_sa->get_mode(child_sa);
+        switch (mode) {
+            case MODE_TUNNEL:
+                strncpy(mode_str, "tunnel", sizeof(mode_str)-1);
+                break;
+            case MODE_TRANSPORT:
+                strncpy(mode_str, "transport", sizeof(mode_str)-1);
+                break;
+            default:
+                strncpy(mode_str, "unknown", sizeof(mode_str)-1);
+                break;
+        }
+    }
+
+    // IKE SA 호스트 정보
+    if (ike_sa) {
+        host_t *src = ike_sa->get_my_host(ike_sa);
+        host_t *dst = ike_sa->get_other_host(ike_sa);
+        if (src) {
+            snprintf(src_str, sizeof(src_str), "%H", src);
+        }
+        if (dst) {
+            snprintf(dst_str, sizeof(dst_str), "%H", dst);
+        }
+    }
+
+    // Traffic Selector 정보 추출
+    if (child_sa) {
+        enumerator_t *ts_enum = child_sa->create_policy_enumerator(child_sa);
+        traffic_selector_t *local_traffic_sel, *remote_traffic_sel;
+        
+        if (ts_enum && ts_enum->enumerate(ts_enum, &local_traffic_sel, &remote_traffic_sel)) {
+            // Traffic Selector를 문자열로 변환
+            if (local_traffic_sel) {
+                snprintf(local_ts, sizeof(local_ts), "%R", local_traffic_sel);
+            }
+            if (remote_traffic_sel) {
+                snprintf(remote_ts, sizeof(remote_ts), "%R", remote_traffic_sel);
+            }
+        }
+        
+        if (ts_enum) {
+            ts_enum->destroy(ts_enum);
+        }
+    }
+
+    // JSON에 터널 상세 정보 추가
+    cJSON_AddNumberToObject(tunnel_json, "spi", spi);
+    cJSON_AddStringToObject(tunnel_json, "proto", proto_str);
+    cJSON_AddStringToObject(tunnel_json, "mode", mode_str);
+    cJSON_AddStringToObject(tunnel_json, "enc_alg", enc_alg);
+    cJSON_AddStringToObject(tunnel_json, "integ_alg", integ_alg);
+    cJSON_AddStringToObject(tunnel_json, "src", src_str);
+    cJSON_AddStringToObject(tunnel_json, "dst", dst_str);
+    cJSON_AddStringToObject(tunnel_json, "local_ts", local_ts);
+    cJSON_AddStringToObject(tunnel_json, "remote_ts", remote_ts);
+    cJSON_AddStringToObject(tunnel_json, "direction", "out");
+    cJSON_AddStringToObject(tunnel_json, "policy_action", "protect");
+
+    // 통합된 터널 이벤트 전송 (publish_tunnel_event 사용)
+    char *tunnel_event_string = cJSON_Print(tunnel_json);
+    if (tunnel_event_string) {
         extsock_event_publisher_t *publisher = this->public.get_event_publisher(&this->public);
         if (publisher) {
-            publisher->publish_event(&this->event_publisher, event_string);
+            // 터널 이벤트만 전송 (중복 제거)
+            publisher->publish_tunnel_event(&this->event_publisher, tunnel_event_string);
         }
-        free(event_string);
+        free(tunnel_event_string);
     }
     
-    cJSON_Delete(event_json);
+    cJSON_Delete(tunnel_json);
 }
 
 /**
@@ -210,7 +305,7 @@ METHOD(listener_t, child_rekey, bool,
     EXTSOCK_DBG(1, "CHILD SA rekey event: %s/%s -> %s/%s", 
                ike_name, old_child_name, ike_name, new_child_name);
     
-    // JSON 이벤트 생성 및 전송
+    // 1. 기본 Child SA rekey 이벤트 생성 및 전송
     cJSON *event_json = cJSON_CreateObject();
     if (!event_json) {
         EXTSOCK_DBG(1, "Failed to create CHILD rekey event JSON object");
@@ -232,6 +327,11 @@ METHOD(listener_t, child_rekey, bool,
     }
     
     cJSON_Delete(event_json);
+
+    // 2. 새로운 Child SA에 대한 터널 이벤트 생성 (tunnel_up)
+    // rekey 후 새로운 터널이 활성화되었음을 알림
+    this->public.handle_child_updown(&this->public, ike_sa, new, TRUE);
+    
     return TRUE;
 }
 

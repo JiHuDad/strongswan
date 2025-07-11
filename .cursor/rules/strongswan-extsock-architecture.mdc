@@ -1,0 +1,187 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan extsock Plugin Architecture Guide
+
+## Clean Architecture Overview
+
+The extsock plugin follows Clean Architecture principles with clear separation of concerns:
+
+```
+┌─────────────────────────────────────────────────┐
+│                 External Layer                  │
+│  • CLI Clients                                  │
+│  • DPDK Applications                            │
+│  • Management Systems                           │
+└─────────────────────────────────────────────────┘
+                        │
+                 Unix Domain Socket
+                        │
+┌─────────────────────────────────────────────────┐
+│              Adapters Layer                     │
+│  • [socket/](mdc:src/libcharon/plugins/extsock/adapters/socket/) - Socket communication │
+│  • [json/](mdc:src/libcharon/plugins/extsock/adapters/json/) - JSON parsing           │
+│  • [strongswan/](mdc:src/libcharon/plugins/extsock/adapters/strongswan/) - strongSwan integration │
+└─────────────────────────────────────────────────┘
+                        │
+┌─────────────────────────────────────────────────┐
+│              Use Cases Layer                    │
+│  • [usecases/extsock_config_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c) - Config management │
+│  • [usecases/extsock_event_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_event_usecase.c) - Event handling    │
+└─────────────────────────────────────────────────┘
+                        │
+┌─────────────────────────────────────────────────┐
+│               Domain Layer                      │
+│  • [domain/extsock_config_entity.c](mdc:src/libcharon/plugins/extsock/domain/extsock_config_entity.c) - Config entities   │
+│  • [common/extsock_types.h](mdc:src/libcharon/plugins/extsock/common/extsock_types.h) - Type definitions      │
+└─────────────────────────────────────────────────┘
+```
+
+## Key Components
+
+### 1. Plugin Entry Point
+**File**: [src/libcharon/plugins/extsock/extsock_plugin.c](mdc:src/libcharon/plugins/extsock/extsock_plugin.c)
+- Plugin initialization and lifecycle management
+- SIGPIPE signal handling setup
+- Component assembly and dependency injection
+
+### 2. Socket Communication Adapter
+**File**: [src/libcharon/plugins/extsock/adapters/socket/extsock_socket_adapter.c](mdc:src/libcharon/plugins/extsock/adapters/socket/extsock_socket_adapter.c)
+- Unix Domain Socket server implementation
+- Thread-safe client communication
+- Event publishing to external clients
+- Command reception and delegation
+
+### 3. JSON Configuration Parser
+**File**: [src/libcharon/plugins/extsock/adapters/json/extsock_json_parser.c](mdc:src/libcharon/plugins/extsock/adapters/json/extsock_json_parser.c)
+- JSON configuration parsing
+- strongSwan configuration object creation
+- Input validation and error handling
+
+### 4. strongSwan Integration Adapter
+**File**: [src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.c](mdc:src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.c)
+- strongSwan API abstraction
+- IKE_SA and CHILD_SA management
+- DPD functionality implementation
+- Credential management
+
+### 5. Configuration Use Case
+**File**: [src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c)
+- Business logic for configuration management
+- Command processing orchestration
+- External command handling
+
+### 6. Event Use Case
+**File**: [src/libcharon/plugins/extsock/usecases/extsock_event_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_event_usecase.c)
+- strongSwan bus listener implementation
+- Event transformation and publishing
+- Real-time tunnel state monitoring
+
+## Interface Definitions
+
+### Command Handler Interface
+**File**: [src/libcharon/plugins/extsock/interfaces/extsock_command_handler.h](mdc:src/libcharon/plugins/extsock/interfaces/extsock_command_handler.h)
+```c
+struct extsock_command_handler_t {
+    extsock_error_t (*handle_command)(extsock_config_usecase_t *this, const char *command);
+    extsock_error_t (*handle_config_command)(extsock_config_usecase_t *this, const char *config_json);
+    extsock_error_t (*handle_dpd_command)(extsock_config_usecase_t *this, const char *ike_sa_name);
+    void (*destroy)(extsock_config_usecase_t *this);
+};
+```
+
+### Event Publisher Interface
+**File**: [src/libcharon/plugins/extsock/interfaces/extsock_event_publisher.h](mdc:src/libcharon/plugins/extsock/interfaces/extsock_event_publisher.h)
+```c
+struct extsock_event_publisher_t {
+    extsock_error_t (*publish_event)(extsock_event_publisher_t *this, const char *event_json);
+    extsock_error_t (*publish_tunnel_event)(extsock_event_publisher_t *this, const char *event_type, /* ... */);
+    void (*destroy)(extsock_event_publisher_t *this);
+};
+```
+
+## Data Flow Patterns
+
+### 1. Configuration Application Flow
+```
+External Client → Socket Adapter → Config Use Case → JSON Parser → strongSwan Adapter → strongSwan Core
+```
+
+### 2. Event Publishing Flow
+```
+strongSwan Core → Event Use Case → Socket Adapter → External Client
+```
+
+### 3. DPD Trigger Flow
+```
+External Client → Socket Adapter → Config Use Case → strongSwan Adapter → IKE_SA.send_dpd()
+```
+
+## Testing Architecture
+
+### Unit Tests
+- **Location**: [src/libcharon/plugins/extsock/test/unit/](mdc:src/libcharon/plugins/extsock/test/unit/)
+- Individual component testing
+- Mock implementations for dependencies
+
+### Integration Tests
+- **Location**: [src/libcharon/plugins/extsock/test/integration/](mdc:src/libcharon/plugins/extsock/test/integration/)
+- End-to-end workflow testing
+- Socket communication validation
+
+### Client Example
+- **Location**: [src/libcharon/plugins/extsock/client/extsock_client.c](mdc:src/libcharon/plugins/extsock/client/extsock_client.c)
+- CLI client for testing
+- Usage examples and workflow demonstration
+
+## Directory Structure
+
+```
+src/libcharon/plugins/extsock/
+├── adapters/           # External integrations
+│   ├── json/          # JSON parsing
+│   ├── socket/        # Socket communication
+│   └── strongswan/    # strongSwan API integration
+├── client/            # Test client implementation
+├── common/            # Shared utilities and types
+├── domain/            # Business entities
+├── interfaces/        # Abstract interfaces
+├── test/              # Testing suite
+│   ├── gtest/         # C++ tests
+│   ├── integration/   # Integration tests
+│   └── unit/          # Unit tests
+└── usecases/          # Business logic
+```
+
+## Dependency Injection Pattern
+
+The plugin uses constructor injection for dependency management:
+
+```c
+// Use case creation with injected dependencies
+extsock_config_usecase_t *config_usecase = extsock_config_usecase_create(
+    json_parser,     // JSON parsing dependency
+    event_usecase    // Event publishing dependency
+);
+
+// Socket adapter creation with use case dependency
+extsock_socket_adapter_t *socket_adapter = extsock_socket_adapter_create(
+    config_usecase   // Command handling dependency
+);
+```
+
+## Error Handling Strategy
+
+1. **Consistent Error Types**: All functions return `extsock_error_t`
+2. **Error Propagation**: Errors bubble up through layers
+3. **Logging Integration**: All errors are logged with context
+4. **Resource Cleanup**: RAII-style cleanup in all error paths
+
+## Thread Safety Model
+
+- **Socket Operations**: Protected by mutex in socket adapter
+- **Configuration Management**: Thread-safe access to peer config list
+- **Event Publishing**: Lock-free event publishing to avoid deadlocks
+- **strongSwan Integration**: Proper checkout/checkin pattern for IKE_SA access

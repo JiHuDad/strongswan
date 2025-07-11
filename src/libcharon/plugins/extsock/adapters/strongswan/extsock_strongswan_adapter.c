@@ -60,17 +60,17 @@ static extsock_error_t start_dpd_internal(const char *ike_sa_name)
     
     EXTSOCK_DBG(1, "start_dpd: Starting DPD for IKE_SA '%s'", ike_sa_name);
     
-    // 🟡 MEDIUM PRIORITY: strongSwan API 안전 호출
-    ike_dpd_t *dpd = EXTSOCK_SAFE_STRONGSWAN_CREATE(ike_dpd_create, TRUE);
-    if (!dpd) {
-        charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
-        return EXTSOCK_ERROR_STRONGSWAN_API;
-    }
-    
-    ike_sa->queue_task(ike_sa, (task_t*)dpd);
+    // 🟢 CRITICAL FIX: ike_sa->send_dpd() 직접 호출 (queue_task 대신)
+    status_t result = ike_sa->send_dpd(ike_sa);
     charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
     
-    return EXTSOCK_SUCCESS;
+    if (result == SUCCESS) {
+        EXTSOCK_DBG(1, "DPD successfully triggered for IKE_SA '%s'", ike_sa_name);
+        return EXTSOCK_SUCCESS;
+    } else {
+        EXTSOCK_DBG(1, "DPD failed for IKE_SA '%s' with status %d", ike_sa_name, result);
+        return EXTSOCK_ERROR_STRONGSWAN_API;
+    }
 }
 
 METHOD(extsock_config_repository_t, apply_config, extsock_error_t,

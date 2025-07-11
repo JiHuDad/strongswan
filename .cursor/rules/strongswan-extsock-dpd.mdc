@@ -1,0 +1,79 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan extsock Plugin DPD Implementation Guide
+
+## DPD (Dead Peer Detection) Critical Implementation Pattern
+
+### ✅ CORRECT: Direct send_dpd() Call
+When implementing DPD functionality in strongSwan plugins, **ALWAYS use `ike_sa->send_dpd()` directly**:
+
+```c
+// ✅ Correct approach - Direct DPD execution
+status_t result = ike_sa->send_dpd(ike_sa);
+if (result == SUCCESS) {
+    EXTSOCK_DBG(1, "DPD successfully triggered for IKE_SA '%s'", ike_sa_name);
+    return EXTSOCK_SUCCESS;
+} else {
+    EXTSOCK_DBG(1, "DPD failed for IKE_SA '%s' with status %d", ike_sa_name, result);
+    return EXTSOCK_ERROR_STRONGSWAN_API;
+}
+```
+
+### ❌ AVOID: Task Queue Approach
+**DO NOT** use `ike_sa->queue_task()` for DPD as it can get stuck in queue due to:
+- IKEv2 task_manager timing conditions (`timercmp` checks)
+- MOBIKE conflicts and priority issues
+- Exchange busy states causing delays
+
+```c
+// ❌ Problematic approach - Task may never activate
+ike_dpd_t *dpd = ike_dpd_create(TRUE);
+ike_sa->queue_task(ike_sa, (task_t*)dpd);  // May get stuck in queue
+```
+
+## Key Files for DPD Implementation
+
+### Core DPD Logic
+- [src/libcharon/sa/ike_sa.c](mdc:src/libcharon/sa/ike_sa.c) - `send_dpd()` method implementation (lines 853-906)
+- [src/libcharon/sa/ikev2/task_manager_v2.c](mdc:src/libcharon/sa/ikev2/task_manager_v2.c) - Task queue management and `activate_task()` issues
+
+### extsock Plugin DPD Integration
+- [src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.c](mdc:src/libcharon/plugins/extsock/adapters/strongswan/extsock_strongswan_adapter.c) - `start_dpd_internal()` function
+- [src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c](mdc:src/libcharon/plugins/extsock/usecases/extsock_config_usecase.c) - DPD command handling
+
+## DPD Troubleshooting Checklist
+
+1. **Queue Activation Issues**: Check `activate_task()` timing conditions in task_manager_v2.c
+2. **MOBIKE Conflicts**: Verify MOBIKE vs regular DPD priority in `queue_dpd()`
+3. **IKE_SA State**: Ensure IKE_SA is in ESTABLISHED state before DPD
+4. **Debug Logging**: Add comprehensive logging for DPD trigger and result status
+
+## Safety Patterns for strongSwan API Calls
+
+Always wrap strongSwan API calls with safety checks:
+
+```c
+// Checkout IKE_SA safely
+ike_sa_t *ike_sa = charon->ike_sa_manager->checkout_by_name(
+    charon->ike_sa_manager, (char*)ike_sa_name, ID_MATCH_PERFECT);
+if (!ike_sa) {
+    EXTSOCK_DBG(1, "IKE_SA '%s' not found", ike_sa_name);
+    return EXTSOCK_ERROR_STRONGSWAN_API;
+}
+
+// Perform operation
+status_t result = ike_sa->send_dpd(ike_sa);
+
+// Always checkin
+charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
+```
+
+## Common DPD Implementation Mistakes
+
+1. **Forgetting checkin()**: Always call `checkin()` after `checkout_by_name()`
+2. **Ignoring return values**: Check `send_dpd()` return status
+3. **Missing NULL checks**: Validate all parameters and strongSwan objects
+4. **Task queue assumptions**: Don't assume queued tasks will activate immediately
