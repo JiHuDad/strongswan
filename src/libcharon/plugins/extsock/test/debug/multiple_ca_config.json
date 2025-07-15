@@ -1,0 +1,69 @@
+{
+    "name": "enterprise_vpn_connection",
+    "ike_cfg": {
+        "local_addrs": ["0.0.0.0"],
+        "remote_addrs": ["vpn.enterprise.com"],
+        "version": 2,
+        "proposals": [
+            "aes256-sha256-modp2048",
+            "aes128-sha256-modp2048"
+        ]
+    },
+    "local_auth": {
+        "auth": "cert",
+        "cert": "/etc/ipsec.d/certs/client.crt",
+        "private_key": "/etc/ipsec.d/private/client.key",
+        "private_key_passphrase": "client_password",
+        
+        "// 방법 1: 단일 CA (기존 방식 - 하위 호환성)": "",
+        "ca_cert": "/etc/ipsec.d/cacerts/company_root_ca.crt",
+        
+        "// 방법 2: 여러 CA 배열": "",
+        "ca_certs": [
+            "/etc/ipsec.d/cacerts/company_root_ca.crt",
+            "/etc/ipsec.d/cacerts/intermediate_ca.crt",
+            "/etc/ipsec.d/cacerts/department_ca.crt"
+        ],
+        
+        "// 방법 3: 구조화된 CA 체인 (권장)": "",
+        "ca_chain": {
+            "root_ca": "/etc/ipsec.d/cacerts/company_root_ca.crt",
+            "intermediate_cas": [
+                "/etc/ipsec.d/cacerts/intermediate_ca_1.crt",
+                "/etc/ipsec.d/cacerts/intermediate_ca_2.crt",
+                "/etc/ipsec.d/cacerts/department_ca.crt"
+            ]
+        },
+        
+        "// OCSP/CRL 온라인 검증 설정": "",
+        "enable_ocsp": true,
+        "enable_crl": true
+    },
+    "remote_auth": {
+        "auth": "cert",
+        "// 원격 인증서 검증용 CA들": "",
+        "ca_chain": {
+            "root_ca": "/etc/ipsec.d/cacerts/server_root_ca.crt",
+            "intermediate_cas": [
+                "/etc/ipsec.d/cacerts/server_intermediate_ca.crt"
+            ]
+        }
+    },
+    "children": [
+        {
+            "name": "enterprise_tunnel",
+            "local_ts": ["10.0.0.0/8"],
+            "remote_ts": ["192.168.0.0/16"],
+            "esp_proposals": [
+                "aes256-sha256",
+                "aes128-sha256"
+            ],
+            "start_action": "trap",
+            "dpd_action": "restart",
+            "lifetime": {
+                "rekey_time": 3600,
+                "life_time": 7200
+            }
+        }
+    ]
+} 
