@@ -6,6 +6,7 @@
 
 #include <library.h>
 #include <utils/debug.h>
+#include <utils/chunk.h>
 #include <credentials/keys/shared_key.h>
 #include <credentials/sets/callback_cred.h>
 #include <credentials/certificates/x509.h>
@@ -14,6 +15,9 @@
 #include <credentials/auth_cfg.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <errno.h> // Required for errno
+#include <string.h> // Required for strerror
 
 typedef struct private_extsock_cert_loader_t private_extsock_cert_loader_t;
 
@@ -36,22 +40,39 @@ struct private_extsock_cert_loader_t {
 /**
  * Password callback for encrypted private keys
  */
-static shared_key_t* password_callback(private_extsock_cert_loader_t *this,
+static shared_key_t* password_callback(void *data,
                                      shared_key_type_t type,
                                      identification_t *me, identification_t *other,
                                      id_match_t *match_me, id_match_t *match_other)
 {
+    private_extsock_cert_loader_t *this = (private_extsock_cert_loader_t*)data;
     chunk_t password_chunk;
+    
+    DBG2(DBG_CFG, "password callback called for type: %d", type);
     
     if (type != SHARED_PRIVATE_KEY_PASS)
     {
+        DBG2(DBG_CFG, "callback: ignoring non-private-key-pass request");
         return NULL;
     }
     
     if (this->password)
     {
-        DBG2(DBG_CFG, "using configured password for private key decryption");
+        DBG2(DBG_CFG, "callback: using configured password for private key decryption");
         password_chunk = chunk_create(this->password, strlen(this->password));
+        if (match_me) *match_me = ID_MATCH_PERFECT;
+        if (match_other) *match_other = ID_MATCH_PERFECT;
+        return shared_key_create(SHARED_PRIVATE_KEY_PASS, chunk_clone(password_chunk));
+    }
+    
+    DBG2(DBG_CFG, "callback: no password configured, trying environment variables");
+    
+    /* Try environment variables as fallback */
+    char *env_password = getenv("STRONGSWAN_PRIVATE_KEY_PASS");
+    if (env_password)
+    {
+        DBG2(DBG_CFG, "callback: using password from environment variable");
+        password_chunk = chunk_create(env_password, strlen(env_password));
         if (match_me) *match_me = ID_MATCH_PERFECT;
         if (match_other) *match_other = ID_MATCH_PERFECT;
         return shared_key_create(SHARED_PRIVATE_KEY_PASS, chunk_clone(password_chunk));
@@ -59,7 +80,7 @@ static shared_key_t* password_callback(private_extsock_cert_loader_t *this,
     
     if (this->interactive)
     {
-        DBG1(DBG_CFG, "private key is encrypted, but interactive prompting disabled in this version");
+        DBG1(DBG_CFG, "callback: private key is encrypted, but interactive prompting disabled in this version");
         /* 
          * Note: getpass() requires special linking on some systems.
          * For now, we disable interactive prompting and rely on:
@@ -70,6 +91,7 @@ static shared_key_t* password_callback(private_extsock_cert_loader_t *this,
         return NULL;
     }
     
+    DBG1(DBG_CFG, "callback: no password available for encrypted private key");
     return NULL;
 }
 
@@ -101,6 +123,7 @@ METHOD(extsock_cert_loader_t, load_private_key, private_key_t*,
        private_extsock_cert_loader_t *this, char *path, char *passphrase)
 {
     private_key_t *key;
+    chunk_t *data;
     
     if (!path)
     {
@@ -108,19 +131,49 @@ METHOD(extsock_cert_loader_t, load_private_key, private_key_t*,
         return NULL;
     }
     
+    DBG2(DBG_CFG, "attempting to load private key from %s", path);
+    
+    /* Read the file first */
+    data = chunk_map(path, FALSE);
+    if (!data)
+    {
+        DBG1(DBG_CFG, "failed to read private key file %s: %s", 
+             path, strerror(errno));
+        return NULL;
+    }
+    
     /* Temporarily set password for this operation */
     char *old_password = this->password;
     this->password = passphrase;
     
+    /* Add our callback credential set temporarily for password resolution */
+    lib->credmgr->add_local_set(lib->credmgr, &this->callback_creds->set, FALSE);
+    
+    /* Use PEM loader which handles encrypted files properly */
     key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
-                            BUILD_FROM_FILE, path, BUILD_END);
+                            BUILD_BLOB_PEM, *data, BUILD_END);
+    
+    if (!key)
+    {
+        /* If PEM failed, try ASN.1 DER format */
+        DBG2(DBG_CFG, "PEM loading failed, trying ASN.1 DER format");
+        key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                                BUILD_BLOB_ASN1_DER, *data, BUILD_END);
+    }
+    
+    /* Remove the callback credential set */
+    lib->credmgr->remove_local_set(lib->credmgr, &this->callback_creds->set);
     
     /* Restore original password */
     this->password = old_password;
     
+    /* Cleanup file mapping */
+    chunk_unmap(data);
+    
     if (!key)
     {
         DBG1(DBG_CFG, "failed to load private key from %s", path);
+        DBG1(DBG_CFG, "if the key is encrypted, ensure the correct password is provided");
         return NULL;
     }
     
@@ -132,6 +185,7 @@ METHOD(extsock_cert_loader_t, load_private_key_auto, private_key_t*,
        private_extsock_cert_loader_t *this, char *path)
 {
     private_key_t *key;
+    chunk_t *data;
     
     if (!path)
     {
@@ -139,22 +193,46 @@ METHOD(extsock_cert_loader_t, load_private_key_auto, private_key_t*,
         return NULL;
     }
     
+    DBG2(DBG_CFG, "attempting to load private key with auto password resolution from %s", path);
+    
+    /* Read the file first */
+    data = chunk_map(path, FALSE);
+    if (!data)
+    {
+        DBG1(DBG_CFG, "failed to read private key file %s: %s", 
+             path, strerror(errno));
+        return NULL;
+    }
+    
     /* Add our callback credential set temporarily */
     lib->credmgr->add_local_set(lib->credmgr, &this->callback_creds->set, FALSE);
     
+    /* Use PEM loader which handles encrypted files properly */
     key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
-                            BUILD_FROM_FILE, path, BUILD_END);
+                            BUILD_BLOB_PEM, *data, BUILD_END);
+    
+    if (!key)
+    {
+        /* If PEM failed, try ASN.1 DER format */
+        DBG2(DBG_CFG, "PEM loading failed, trying ASN.1 DER format");
+        key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                                BUILD_BLOB_ASN1_DER, *data, BUILD_END);
+    }
     
     /* Remove the callback credential set */
     lib->credmgr->remove_local_set(lib->credmgr, &this->callback_creds->set);
     
+    /* Cleanup file mapping */
+    chunk_unmap(data);
+    
     if (!key)
     {
         DBG1(DBG_CFG, "failed to load private key from %s", path);
+        DBG1(DBG_CFG, "auto password resolution failed - check configured password or environment variable STRONGSWAN_PRIVATE_KEY_PASS");
         return NULL;
     }
     
-    DBG2(DBG_CFG, "successfully loaded private key from %s", path);
+    DBG2(DBG_CFG, "successfully loaded private key from %s using auto password resolution", path);
     return key;
 }
 
@@ -683,8 +761,7 @@ extsock_cert_loader_t* extsock_cert_loader_create()
     );
     
     /* Create callback credential set for password resolution */
-    this->callback_creds = callback_cred_create_shared(
-        (callback_cred_shared_cb_t)password_callback, this);
+    this->callback_creds = callback_cred_create_shared(password_callback, this);
     
     return &this->public;
 } 
