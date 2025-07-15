@@ -48,7 +48,8 @@ static shared_key_t* password_callback(void *data,
     private_extsock_cert_loader_t *this = (private_extsock_cert_loader_t*)data;
     chunk_t password_chunk;
     
-    DBG2(DBG_CFG, "password callback called for type: %d", type);
+    DBG2(DBG_CFG, "🔑 EXTSOCK password callback called for type: %d (%s)", 
+         type, type == SHARED_PRIVATE_KEY_PASS ? "PRIVATE_KEY_PASS" : "OTHER");
     
     if (type != SHARED_PRIVATE_KEY_PASS)
     {
@@ -58,7 +59,8 @@ static shared_key_t* password_callback(void *data,
     
     if (this->password)
     {
-        DBG2(DBG_CFG, "callback: using configured password for private key decryption");
+        DBG1(DBG_CFG, "✅ callback: using configured password for private key decryption (length: %d)", 
+             (int)strlen(this->password));
         password_chunk = chunk_create(this->password, strlen(this->password));
         if (match_me) *match_me = ID_MATCH_PERFECT;
         if (match_other) *match_other = ID_MATCH_PERFECT;
@@ -71,7 +73,8 @@ static shared_key_t* password_callback(void *data,
     char *env_password = getenv("STRONGSWAN_PRIVATE_KEY_PASS");
     if (env_password)
     {
-        DBG2(DBG_CFG, "callback: using password from environment variable");
+        DBG1(DBG_CFG, "✅ callback: using password from environment variable (length: %d)", 
+             (int)strlen(env_password));
         password_chunk = chunk_create(env_password, strlen(env_password));
         if (match_me) *match_me = ID_MATCH_PERFECT;
         if (match_other) *match_other = ID_MATCH_PERFECT;
@@ -80,7 +83,7 @@ static shared_key_t* password_callback(void *data,
     
     if (this->interactive)
     {
-        DBG1(DBG_CFG, "callback: private key is encrypted, but interactive prompting disabled in this version");
+        DBG1(DBG_CFG, "❌ callback: private key is encrypted, but interactive prompting disabled in this version");
         /* 
          * Note: getpass() requires special linking on some systems.
          * For now, we disable interactive prompting and rely on:
@@ -91,7 +94,8 @@ static shared_key_t* password_callback(void *data,
         return NULL;
     }
     
-    DBG1(DBG_CFG, "callback: no password available for encrypted private key");
+    DBG1(DBG_CFG, "❌ callback: no password available for encrypted private key");
+    DBG1(DBG_CFG, "💡 Try: 1) Set 'private_key_passphrase' in JSON 2) Set STRONGSWAN_PRIVATE_KEY_PASS env var");
     return NULL;
 }
 

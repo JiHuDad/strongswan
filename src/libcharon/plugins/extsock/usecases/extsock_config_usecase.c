@@ -92,11 +92,86 @@ static void parse_ike_lifetime(cJSON *ike_json, peer_cfg_create_t *peer_cfg)
 }
 
 /**
- * 단일 연결 처리 함수 (기존 로직 분리)
+ * 단일 연결 처리 함수 (Config Entity 기반으로 리팩토링)
+ * Clean Architecture: Use Case → Domain Entity → Infrastructure
  */
-static extsock_error_t process_single_connection(private_extsock_config_usecase_t *this, 
+static extsock_error_t process_single_connection_with_entity(private_extsock_config_usecase_t *this, 
+    const char *config_json_str)
+{
+    EXTSOCK_DBG(2, "process_single_connection_with_entity: Starting Domain Layer processing");
+
+    // === Step 1: JSON → Config Entity (Domain Layer) ===
+    extsock_config_entity_t *config_entity = this->json_parser->parse_config_entity(
+        this->json_parser, config_json_str);
+    
+    if (!config_entity) {
+        EXTSOCK_DBG(1, "process_single_connection_with_entity: Failed to create config entity from JSON");
+        return EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+
+    const char *conn_name = config_entity->get_name(config_entity);
+    EXTSOCK_DBG(2, "process_single_connection_with_entity: Processing entity '%s'", conn_name);
+
+    // === Step 2: Entity Validation (Domain Layer) ===
+    if (!config_entity->validate(config_entity)) {
+        EXTSOCK_DBG(1, "process_single_connection_with_entity: Config entity validation failed for '%s'", conn_name);
+        config_entity->destroy(config_entity);
+        return EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+
+    // === Step 3: Domain Entity → strongSwan Infrastructure ===
+    peer_cfg_t *peer_cfg = config_entity->to_peer_cfg(config_entity);
+    if (!peer_cfg) {
+        EXTSOCK_DBG(1, "process_single_connection_with_entity: Failed to convert entity to peer_cfg for '%s'", conn_name);
+        config_entity->destroy(config_entity);
+        return EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+
+    EXTSOCK_DBG(1, "process_single_connection_with_entity: Successfully converted entity '%s' to peer_cfg", conn_name);
+
+    // === Step 4: Apply to strongSwan (Infrastructure Layer) ===
+    extsock_error_t result = this->strongswan_adapter->add_peer_config(this->strongswan_adapter, peer_cfg);
+    
+    if (result == EXTSOCK_SUCCESS) {
+        // Event publishing
+        if (this->event_publisher) {
+            char event_json[512];
+            size_t name_len = strlen(conn_name);
+            if (name_len > 400) {  // 안전한 길이 체크
+                EXTSOCK_DBG(1, "Connection name too long for event JSON, truncating");
+                char safe_name[401];
+                strncpy(safe_name, conn_name, 400);
+                safe_name[400] = '\0';
+                snprintf(event_json, sizeof(event_json), 
+                        "{\"event\":\"CONFIG_APPLIED\",\"connection\":\"%s\",\"status\":\"success\"}", safe_name);
+            } else {
+                snprintf(event_json, sizeof(event_json), 
+                        "{\"event\":\"CONFIG_APPLIED\",\"connection\":\"%s\",\"status\":\"success\"}", conn_name);
+            }
+            this->event_publisher->publish_event(this->event_publisher, event_json);
+        }
+        
+        EXTSOCK_DBG(1, "process_single_connection_with_entity: Successfully applied config '%s' via Clean Architecture", conn_name);
+    } else {
+        EXTSOCK_DBG(1, "process_single_connection_with_entity: Failed to apply config '%s' to strongSwan", conn_name);
+    }
+
+    // 정리
+    config_entity->destroy(config_entity);
+    peer_cfg->destroy(peer_cfg);
+    
+    return result;
+}
+
+/**
+ * 기존 처리 함수 (하위 호환성을 위해 유지, 향후 제거 예정)
+ * @deprecated Use process_single_connection_with_entity instead
+ */
+static extsock_error_t process_single_connection_legacy(private_extsock_config_usecase_t *this, 
     cJSON *connection_json, const char *conn_name_str)
 {
+    EXTSOCK_DBG(2, "process_single_connection_legacy: Using legacy direct strongSwan processing");
+    
     // IKE 설정 파싱
     cJSON *j_ike_cfg = cJSON_GetObjectItem(connection_json, "ike_cfg");
     ike_cfg_t *ike_cfg = this->json_parser->parse_ike_config(this->json_parser, j_ike_cfg);
@@ -171,24 +246,30 @@ static extsock_error_t process_single_connection(private_extsock_config_usecase_
     extsock_error_t result = this->strongswan_adapter->add_peer_config(this->strongswan_adapter, peer_cfg);
     
     if (result == EXTSOCK_SUCCESS) {
-        // HIGH PRIORITY: 버퍼 오버플로우 방지
+        // 이벤트 발행
         if (this->event_publisher) {
-            char event_json[512];  // 버퍼 크기 증가
-            size_t name_len = EXTSOCK_SAFE_STRLEN(conn_name_str);
-            if (name_len > 400) {  // 안전한 길이 체크 (여유 공간 고려)
+            char event_json[512];
+            size_t name_len = strlen(conn_name_str);
+            if (name_len > 400) {  // 안전한 길이 체크
                 EXTSOCK_DBG(1, "Connection name too long for event JSON, truncating");
                 char safe_name[401];
-                EXTSOCK_SAFE_STRNCPY(safe_name, conn_name_str, sizeof(safe_name));
-                EXTSOCK_SAFE_SNPRINTF(event_json, sizeof(event_json),
-                    "{\"event\":\"config_applied\",\"connection\":\"%s\"}", safe_name);
+                strncpy(safe_name, conn_name_str, 400);
+                safe_name[400] = '\0';
+                snprintf(event_json, sizeof(event_json), 
+                        "{\"event\":\"CONFIG_APPLIED\",\"connection\":\"%s\",\"status\":\"success\"}", safe_name);
             } else {
-                EXTSOCK_SAFE_SNPRINTF(event_json, sizeof(event_json),
-                    "{\"event\":\"config_applied\",\"connection\":\"%s\"}", conn_name_str);
+                snprintf(event_json, sizeof(event_json), 
+                        "{\"event\":\"CONFIG_APPLIED\",\"connection\":\"%s\",\"status\":\"success\"}", conn_name_str);
             }
             this->event_publisher->publish_event(this->event_publisher, event_json);
         }
+        
+        EXTSOCK_DBG(1, "Successfully applied peer_cfg '%s' to strongSwan", conn_name_str);
+    } else {
+        EXTSOCK_DBG(1, "Failed to add peer_cfg '%s' to strongSwan", conn_name_str);
     }
-    
+
+    peer_cfg->destroy(peer_cfg);
     return result;
 }
 
@@ -207,51 +288,58 @@ METHOD(extsock_config_usecase_t, apply_json_config, extsock_error_t,
         return EXTSOCK_ERROR_JSON_PARSE;
     }
 
-    extsock_error_t result = EXTSOCK_SUCCESS;
+    // === Phase 2: Clean Architecture 통합 ===
+    // 모든 설정 처리를 Config Entity 방식으로 통합
+    EXTSOCK_DBG(1, "apply_json_config: Processing with Clean Architecture (Config Entity)");
     
-    // 새로운 connections 배열 형식 확인
-    cJSON *j_connections = cJSON_GetObjectItem(root, "connections");
-    if (j_connections && cJSON_IsArray(j_connections)) {
-        // 새로운 connections 배열 방식 처리
-        EXTSOCK_DBG(1, "apply_json_config: Processing connections array format");
+    extsock_error_t result = process_single_connection_with_entity(this, config_json);
+    
+    if (result != EXTSOCK_SUCCESS) {
+        EXTSOCK_DBG(1, "apply_json_config: Config Entity processing failed, falling back to legacy method");
         
-        cJSON *connection_json;
-        cJSON_ArrayForEach(connection_json, j_connections) {
-            if (!cJSON_IsObject(connection_json)) {
-                EXTSOCK_DBG(1, "apply_json_config: Invalid connection object in array");
-                continue;
-            }
+        // 하위 호환성: 실패 시 기존 방식으로 fallback
+        cJSON *j_connections = cJSON_GetObjectItem(root, "connections");
+        if (j_connections && cJSON_IsArray(j_connections)) {
+            // 배열 형식 처리 (legacy)
+            EXTSOCK_DBG(1, "apply_json_config: Fallback - Processing connections array format");
             
-            // 연결 이름 파싱
-            cJSON *j_conn_name = cJSON_GetObjectItem(connection_json, "name");
+            cJSON *connection_json;
+            cJSON_ArrayForEach(connection_json, j_connections) {
+                if (!cJSON_IsObject(connection_json)) {
+                    EXTSOCK_DBG(1, "apply_json_config: Invalid connection object in array");
+                    continue;
+                }
+                
+                cJSON *j_conn_name = cJSON_GetObjectItem(connection_json, "name");
+                if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
+                    EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in connections array");
+                    continue;
+                }
+                const char *conn_name_str = j_conn_name->valuestring;
+                
+                // Legacy 처리
+                extsock_error_t single_result = process_single_connection_legacy(this, connection_json, conn_name_str);
+                if (single_result != EXTSOCK_SUCCESS) {
+                    EXTSOCK_DBG(1, "apply_json_config: Failed to process connection '%s'", conn_name_str);
+                    result = single_result;
+                }
+            }
+        } else {
+            // 단일 연결 형식 처리 (legacy)
+            EXTSOCK_DBG(1, "apply_json_config: Fallback - Processing single connection format");
+            
+            cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
             if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
-                EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in connections array");
-                continue;
+                EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in JSON");
+                cJSON_Delete(root);
+                return EXTSOCK_ERROR_CONFIG_INVALID;
             }
             const char *conn_name_str = j_conn_name->valuestring;
             
-            // 단일 연결 처리
-            extsock_error_t single_result = process_single_connection(this, connection_json, conn_name_str);
-            if (single_result != EXTSOCK_SUCCESS) {
-                EXTSOCK_DBG(1, "apply_json_config: Failed to process connection '%s'", conn_name_str);
-                result = single_result; // 마지막 에러를 기록하되 계속 진행
-            }
+            result = process_single_connection_legacy(this, root, conn_name_str);
         }
     } else {
-        // 기존 단일 연결 방식 (하위 호환성)
-        EXTSOCK_DBG(1, "apply_json_config: Processing legacy single connection format");
-        
-        // 연결 이름 파싱
-        cJSON *j_conn_name = cJSON_GetObjectItem(root, "name");
-        if (!j_conn_name || !cJSON_IsString(j_conn_name) || !j_conn_name->valuestring) {
-            EXTSOCK_DBG(1, "apply_json_config: Missing connection 'name' in JSON");
-            cJSON_Delete(root);
-            return EXTSOCK_ERROR_CONFIG_INVALID;
-        }
-        const char *conn_name_str = j_conn_name->valuestring;
-        
-        // 단일 연결 처리
-        result = process_single_connection(this, root, conn_name_str);
+        EXTSOCK_DBG(1, "apply_json_config: Successfully processed via Clean Architecture");
     }
     
     cJSON_Delete(root);

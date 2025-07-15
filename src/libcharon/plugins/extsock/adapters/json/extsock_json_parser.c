@@ -390,19 +390,39 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                     passphrase = j_private_key_passphrase->valuestring;
                 }
                 
-                // Try to load with provided password first, then auto-resolution
+                EXTSOCK_DBG(2, "Loading private key from: %s (passphrase: %s)", 
+                           j_private_key->valuestring, passphrase ? "provided" : "none");
+                
+                // 🔥 CRITICAL FIX: 패스워드를 cert_loader에 먼저 설정
                 if (passphrase) {
+                    EXTSOCK_DBG(2, "Setting password for private key decryption");
+                    this->cert_loader->set_password(this->cert_loader, (char*)passphrase);
+                }
+                
+                // Try to load with configured password first
+                private_key = this->cert_loader->load_private_key_auto(this->cert_loader, j_private_key->valuestring);
+                
+                // 🔥 FALLBACK: 명시적 패스워드로 재시도
+                if (!private_key && passphrase) {
+                    EXTSOCK_DBG(2, "Auto loading failed, trying with explicit password");
                     private_key = this->cert_loader->load_private_key(this->cert_loader, 
                                                                       j_private_key->valuestring, (char*)passphrase);
                 }
                 
+                // 🔥 FALLBACK: 환경변수 확인 안내
                 if (!private_key) {
-                    EXTSOCK_DBG(2, "Attempting automatic password resolution for private key");
-                    private_key = this->cert_loader->load_private_key_auto(this->cert_loader, j_private_key->valuestring);
+                    char *env_pass = getenv("STRONGSWAN_PRIVATE_KEY_PASS");
+                    if (env_pass) {
+                        EXTSOCK_DBG(2, "Trying with environment variable STRONGSWAN_PRIVATE_KEY_PASS");
+                        this->cert_loader->set_password(this->cert_loader, env_pass);
+                        private_key = this->cert_loader->load_private_key_auto(this->cert_loader, j_private_key->valuestring);
+                    } else {
+                        EXTSOCK_DBG(1, "Private key loading failed. Try setting STRONGSWAN_PRIVATE_KEY_PASS environment variable");
+                    }
                 }
                 
                 if (private_key) {
-                    EXTSOCK_DBG(2, "Private key loaded from: %s", j_private_key->valuestring);
+                    EXTSOCK_DBG(1, "✅ Private key successfully loaded from: %s", j_private_key->valuestring);
                     
                     // 개인키와 인증서 매칭 확인
                     if (cert && !this->cert_loader->verify_key_cert_match(this->cert_loader, private_key, cert)) {
@@ -412,8 +432,12 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                     // credential store에 개인키 추가
                     this->creds->add_key(this->creds, private_key);
                 } else {
-                    EXTSOCK_DBG(1, "Failed to load private key from: %s", j_private_key->valuestring);
+                    EXTSOCK_DBG(1, "❌ Failed to load private key from: %s", j_private_key->valuestring);
+                    EXTSOCK_DBG(1, "Check: 1) File exists 2) Correct password 3) File format (PEM/DER)");
                 }
+                
+                // 🔥 패스워드 클리어 (보안)
+                this->cert_loader->set_password(this->cert_loader, NULL);
             }
             
             // CA 인증서 로딩
@@ -605,9 +629,119 @@ METHOD(extsock_json_parser_t, parse_child_configs, bool,
 METHOD(extsock_json_parser_t, parse_config_entity, extsock_config_entity_t *,
     private_extsock_json_parser_t *this, const char *config_json)
 {
-    // 이 메서드는 domain layer 구현 후 완성됩니다
-    EXTSOCK_DBG(1, "parse_config_entity not yet implemented");
-    return NULL;
+    if (!config_json) {
+        EXTSOCK_DBG(1, "parse_config_entity: NULL JSON configuration provided");
+        return NULL;
+    }
+
+    EXTSOCK_DBG(2, "parse_config_entity: Starting full JSON-to-Domain integration");
+
+    // JSON 파싱
+    cJSON *root = cJSON_Parse(config_json);
+    if (!root) {
+        EXTSOCK_DBG(1, "parse_config_entity: Failed to parse JSON: %s", cJSON_GetErrorPtr());
+        return NULL;
+    }
+
+    // 연결 이름 추출 (connections 배열 형식도 지원)
+    const char *conn_name = NULL;
+    cJSON *config_json_obj = root;
+    
+    cJSON *j_name = cJSON_GetObjectItem(root, "name");
+    if (!j_name || !cJSON_IsString(j_name) || !j_name->valuestring) {
+        // connections 배열 형식인지 확인
+        cJSON *j_connections = cJSON_GetObjectItem(root, "connections");
+        if (j_connections && cJSON_IsArray(j_connections)) {
+            cJSON *first_conn = cJSON_GetArrayItem(j_connections, 0);
+            if (first_conn) {
+                j_name = cJSON_GetObjectItem(first_conn, "name");
+                if (j_name && cJSON_IsString(j_name)) {
+                    conn_name = j_name->valuestring;
+                    config_json_obj = first_conn;  // 첫 번째 연결을 메인 설정으로 사용
+                }
+            }
+        }
+        
+        if (!conn_name) {
+            EXTSOCK_DBG(1, "parse_config_entity: Missing connection name in JSON");
+            cJSON_Delete(root);
+            return NULL;
+        }
+    } else {
+        conn_name = j_name->valuestring;
+    }
+
+    EXTSOCK_DBG(2, "parse_config_entity: Processing connection '%s'", conn_name);
+
+    // === Phase 2: 실제 JSON 파싱 및 strongSwan 객체 생성 ===
+    
+    // 1. IKE 설정 파싱
+    ike_cfg_t *ike_cfg = NULL;
+    cJSON *j_ike_cfg = cJSON_GetObjectItem(config_json_obj, "ike_cfg");
+    if (j_ike_cfg) {
+        ike_cfg = this->public.parse_ike_config(&this->public, j_ike_cfg);
+        if (!ike_cfg) {
+            EXTSOCK_DBG(1, "parse_config_entity: Failed to parse IKE configuration");
+            cJSON_Delete(root);
+            return NULL;
+        }
+        EXTSOCK_DBG(2, "parse_config_entity: IKE configuration parsed successfully");
+    }
+
+    // 2. 로컬 인증 설정 파싱
+    linked_list_t *local_auths = linked_list_create();
+    cJSON *j_local_auth = cJSON_GetObjectItem(config_json_obj, "local_auth");
+    if (j_local_auth) {
+        auth_cfg_t *local_auth_cfg = this->public.parse_auth_config(&this->public, j_local_auth, TRUE);
+        if (local_auth_cfg) {
+            local_auths->insert_last(local_auths, local_auth_cfg);
+            EXTSOCK_DBG(2, "parse_config_entity: Local auth configuration parsed successfully");
+        }
+    }
+
+    // 3. 원격 인증 설정 파싱
+    linked_list_t *remote_auths = linked_list_create();
+    cJSON *j_remote_auth = cJSON_GetObjectItem(config_json_obj, "remote_auth");
+    if (j_remote_auth) {
+        auth_cfg_t *remote_auth_cfg = this->public.parse_auth_config(&this->public, j_remote_auth, FALSE);
+        if (remote_auth_cfg) {
+            remote_auths->insert_last(remote_auths, remote_auth_cfg);
+            EXTSOCK_DBG(2, "parse_config_entity: Remote auth configuration parsed successfully");
+        }
+    }
+
+    // 4. Config Entity 생성 (실제 파싱된 데이터로)
+    extsock_config_entity_t *entity = extsock_config_entity_create(
+        conn_name, ike_cfg, local_auths, remote_auths);
+    
+    if (!entity) {
+        EXTSOCK_DBG(1, "parse_config_entity: Failed to create config entity");
+        // 생성 실패 시 할당된 자원 정리
+        if (ike_cfg) ike_cfg->destroy(ike_cfg);
+        if (local_auths) {
+            local_auths->destroy_offset(local_auths, offsetof(auth_cfg_t, destroy));
+        }
+        if (remote_auths) {
+            remote_auths->destroy_offset(remote_auths, offsetof(auth_cfg_t, destroy));
+        }
+        cJSON_Delete(root);
+        return NULL;
+    }
+
+    // 5. Entity 검증
+    if (!entity->validate(entity)) {
+        EXTSOCK_DBG(1, "parse_config_entity: Config entity validation failed for '%s'", conn_name);
+        entity->destroy(entity);
+        cJSON_Delete(root);
+        return NULL;
+    }
+
+    EXTSOCK_DBG(1, "parse_config_entity: Successfully created and validated config entity '%s'", 
+               entity->get_name(entity));
+    EXTSOCK_DBG(2, "parse_config_entity: Full JSON-to-Domain integration completed");
+
+    cJSON_Delete(root);
+    return entity;
 }
 
 METHOD(extsock_json_parser_t, destroy, void,
@@ -656,4 +790,4 @@ extsock_json_parser_t *extsock_json_parser_create()
 
     EXTSOCK_DBG(2, "JSON parser created with certificate support");
     return &this->public;
-} 
+} aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
