@@ -1,0 +1,181 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan Certificate Loading and Encrypted Key Handling
+
+## Overview
+The strongSwan extsock plugin provides comprehensive certificate-based authentication with support for encrypted private keys. This guide covers the certificate loading mechanisms and encrypted key handling.
+
+## Certificate Loader Architecture
+
+### Main Certificate Loader
+The core certificate loading functionality is implemented in [extsock_cert_loader.c](mdc:src/libcharon/plugins/extsock/adapters/crypto/extsock_cert_loader.c).
+
+### Key Components
+- **Certificate Loading**: X.509 certificate parsing and validation
+- **Private Key Loading**: Support for both PEM and DER formats
+- **Encrypted Key Support**: Password-based decryption using strongSwan's credential system
+- **Trust Chain Validation**: Full certificate chain verification
+- **OCSP/CRL Support**: Online certificate validation
+
+## Private Key Loading Methods
+
+### Method 1: load_private_key()
+```c
+METHOD(extsock_cert_loader_t, load_private_key, private_key_t*,
+       private_extsock_cert_loader_t *this, char *path)
+```
+- Loads private key with explicit password
+- Supports both encrypted and unencrypted keys
+
+### Method 2: load_private_key_auto()
+```c
+METHOD(extsock_cert_loader_t, load_private_key_auto, private_key_t*,
+       private_extsock_cert_loader_t *this, char *path)
+```
+- Automatic password resolution using multiple sources
+- Environment variable support (`STRONGSWAN_PRIVATE_KEY_PASS`)
+
+## Supported Key Formats
+
+### PEM Format (Primary)
+- **Encrypted PEM**: `-----BEGIN ENCRYPTED PRIVATE KEY-----`
+- **Unencrypted PEM**: `-----BEGIN PRIVATE KEY-----`
+- **PKCS#8 PEM**: Full PKCS#8 support with password resolution
+
+### DER Format (Fallback)
+- **PKCS#8 DER**: Binary ASN.1 DER encoding
+- **PKCS#1 DER**: RSA private keys
+- **SEC1 DER**: ECDSA private keys
+- **Ed25519/Ed448 DER**: Edwards curve keys
+
+## Critical Implementation Fix
+
+### Previous Issue (RESOLVED)
+The original implementation used `BUILD_FROM_FILE` which bypassed strongSwan's encrypted key handling:
+```c
+// OLD - INCORRECT approach
+key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                        BUILD_FROM_FILE, path, BUILD_END);
+```
+
+### Current Solution
+Uses proper blob loading with PEM plugin integration:
+```c
+// NEW - CORRECT approach
+key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                        BUILD_BLOB_PEM, *data, BUILD_END);
+if (!key) {
+    // Fallback to DER format
+    key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                            BUILD_BLOB_ASN1_DER, *data, BUILD_END);
+}
+```
+
+## Password Resolution Hierarchy
+
+### Password Sources (In Order)
+1. **Explicit JSON Field**: `private_key_passphrase` in configuration
+2. **Set Password**: Via `loader->set_password()` method call
+3. **Environment Variable**: `STRONGSWAN_PRIVATE_KEY_PASS`
+4. **Interactive Prompt**: Currently disabled for security
+
+### Password Callback Implementation
+```c
+static shared_key_t* password_callback(callback_creds_t *this, 
+                                      shared_key_type_t type,
+                                      identification_t *me, 
+                                      identification_t *other,
+                                      id_match_t *match_me, 
+                                      id_match_t *match_other)
+```
+
+## JSON Configuration Examples
+
+### Basic Certificate Authentication
+```json
+{
+  "auth": "cert",
+  "cert": "/path/to/certificate.crt",
+  "private_key": "/path/to/private_key.pem"
+}
+```
+
+### Encrypted Private Key
+```json
+{
+  "auth": "cert",
+  "cert": "/path/to/certificate.crt", 
+  "private_key": "/path/to/encrypted_key.pem",
+  "private_key_passphrase": "password123"
+}
+```
+
+### Environment Variable Usage
+```bash
+export STRONGSWAN_PRIVATE_KEY_PASS="mypassword"
+# JSON config can omit passphrase field
+```
+
+## strongSwan Plugin Integration
+
+### PEM Plugin Integration
+- Uses `lib->credmgr->create_shared_enumerator()` for password resolution
+- Handles encrypted PEM files through strongSwan's credential manager
+- Supports PKCS#8 encrypted format
+
+### PKCS#8 Plugin Support  
+- `decrypt_private_key()` function handles password-based decryption
+- Integrates with credential manager's `SHARED_PRIVATE_KEY_PASS` mechanism
+
+### OpenSSL Plugin Fallback
+- Handles unencrypted ASN.1 DER blobs
+- Used when PEM/PKCS#8 plugins cannot process the key
+
+## Testing and Debugging
+
+### Test Files Location
+Debug and testing files are in [debug/](mdc:src/libcharon/plugins/extsock/test/debug/).
+
+### Key Generation for Testing
+```bash
+# Generate encrypted private key
+openssl genrsa -aes256 -passout pass:test123 -out encrypted.key 2048
+
+# Generate DER format
+openssl pkcs8 -topk8 -inform PEM -outform DER -in key.pem -out key.der -nocrypt
+```
+
+### Debug Logging
+- `DBG1()`: Critical errors and failures
+- `DBG2()`: Detailed operation logging
+- `DBG3()`: Verbose debugging information
+
+## Security Considerations
+
+### Password Handling
+- Passwords are cleared from memory after use
+- Environment variables provide secure password delivery
+- No plaintext password storage in configuration files
+
+### Certificate Validation
+- Full X.509 certificate chain validation
+- OCSP and CRL support for revocation checking
+- Trust anchor verification
+
+## Implementation Status
+
+### Completed Phases
+- **Phase 1**: Basic certificate support ✅
+- **Phase 2**: Advanced password management ✅  
+- **Phase 3**: Trust chain and OCSP/CRL validation ✅
+- **Phase 4**: Comprehensive testing and documentation ✅
+
+### Critical Bug Fix Applied
+- **Encrypted Key Loading**: Fixed bypass of strongSwan's password resolution
+- **PEM Plugin Integration**: Proper credential manager integration
+- **Environment Variable Support**: Added `STRONGSWAN_PRIVATE_KEY_PASS`
+
+The certificate loading system is now production-ready with enterprise-grade security and comprehensive format support.

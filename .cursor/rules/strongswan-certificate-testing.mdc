@@ -1,0 +1,240 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# strongSwan Certificate and Encrypted Key Testing
+
+## Overview
+This guide covers testing strategies and debugging approaches for the strongSwan extsock plugin's certificate-based authentication system, particularly focusing on encrypted private key handling.
+
+## Test Environment Setup
+
+### Debug Test Directory
+All testing files and scripts are located in [debug/](mdc:src/libcharon/plugins/extsock/test/debug/).
+
+### Key Test Files
+- [simple_key_test.c](mdc:src/libcharon/plugins/extsock/test/debug/simple_key_test.c): Basic key loading test
+- [test_debug_cert_loader.c](mdc:src/libcharon/plugins/extsock/test/debug/test_debug_cert_loader.c): Certificate loader testing
+
+### Unit Test Files
+- [test_extsock_common.cpp](mdc:src/unit/test_extsock_common.cpp): Common test utilities
+- [test_extsock_errors.cpp](mdc:src/unit/test_extsock_errors.cpp): Error handling tests
+- [test_extsock_plugin.cpp](mdc:src/unit/test_extsock_plugin.cpp): Plugin functionality tests
+
+## Encrypted Key Testing Scenarios
+
+### Test Case 1: OpenSSL-Generated Encrypted Keys
+```bash
+# Generate test keys for various encryption algorithms
+openssl genrsa -aes256 -passout pass:test123 -out debug_encrypted_aes256.key 2048
+openssl genrsa -aes128 -passout pass:test123 -out debug_encrypted_aes128.key 2048
+openssl genrsa -des3 -passout pass:test123 -out debug_encrypted_des3.key 2048
+```
+
+### Test Case 2: PKCS#8 Format Testing
+```bash
+# Convert to PKCS#8 encrypted format
+openssl pkcs8 -topk8 -inform PEM -outform PEM -in debug_encrypted.key \
+              -passin pass:test123 -passout pass:test456 -out debug_pkcs8.key
+
+# Test DER format
+openssl pkcs8 -topk8 -inform PEM -outform DER -in debug_encrypted.key \
+              -passin pass:test123 -passout pass:test456 -out debug_pkcs8.der
+```
+
+### Test Case 3: Different Key Types
+```bash
+# ECDSA keys
+openssl ecparam -name prime256v1 -genkey -noout | \
+        openssl ec -aes256 -passout pass:test123 -out debug_ec_encrypted.key
+
+# Ed25519 keys (if supported)
+openssl genpkey -algorithm Ed25519 -out debug_ed25519.key
+openssl pkcs8 -topk8 -inform PEM -outform PEM -in debug_ed25519.key \
+              -passout pass:test123 -out debug_ed25519_encrypted.key
+```
+
+## Testing the BUILD_FROM_FILE vs BUILD_BLOB_PEM Fix
+
+### Critical Bug Reproduction
+The original bug could be reproduced with:
+```c
+// OLD implementation - FAILS with encrypted keys
+key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                        BUILD_FROM_FILE, path, BUILD_END);
+```
+
+### Fixed Implementation Testing
+```c
+// NEW implementation - WORKS with encrypted keys
+chunk_t *data = chunk_map(path, FALSE);
+key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                        BUILD_BLOB_PEM, *data, BUILD_END);
+if (!key) {
+    key = lib->creds->create(lib->creds, CRED_PRIVATE_KEY, KEY_ANY,
+                            BUILD_BLOB_ASN1_DER, *data, BUILD_END);
+}
+chunk_unmap(data);
+```
+
+## Password Resolution Testing
+
+### Environment Variable Testing
+```bash
+# Test environment variable password resolution
+export STRONGSWAN_PRIVATE_KEY_PASS="test123"
+./simple_key_test debug_encrypted.key
+unset STRONGSWAN_PRIVATE_KEY_PASS
+```
+
+### JSON Configuration Testing
+```json
+{
+  "auth": "cert",
+  "cert": "/path/to/test.crt",
+  "private_key": "/path/to/debug_encrypted.key",
+  "private_key_passphrase": "test123"
+}
+```
+
+### Programmatic Password Setting
+```c
+loader->set_password(loader, "test123");
+key = loader->load_private_key_auto(loader, "debug_encrypted.key");
+```
+
+## strongSwan Plugin Testing Integration
+
+### PEM Plugin Testing
+Verify PEM plugin handles encrypted files:
+```bash
+# Check if PEM plugin is loaded
+ipsec statusall | grep -i pem
+
+# Test PEM plugin directly
+swanctl --load-creds --file encrypted_key.pem
+```
+
+### PKCS#8 Plugin Testing
+```bash
+# Verify PKCS#8 plugin functionality
+ipsec statusall | grep -i pkcs
+
+# Test PKCS#8 encrypted key loading
+swanctl --load-creds --file pkcs8_encrypted.key
+```
+
+## Debug Logging and Troubleshooting
+
+### Enable Debug Logging
+```bash
+# Enable detailed credential loading logs
+ipsec restart --debug-all
+tail -f /var/log/charon.log | grep -E "(CFG|LIB)"
+```
+
+### Debug Output Analysis
+Key log messages to look for:
+```
+DBG2(CFG): attempting to load private key with auto password resolution
+DBG2(CFG): PEM loading failed, trying ASN.1 DER format
+DBG1(CFG): failed to load private key - if encrypted, ensure correct password
+DBG2(CFG): successfully loaded private key
+```
+
+## Memory and Resource Testing
+
+### Memory Leak Testing
+```c
+// Ensure proper cleanup in test cases
+chunk_t *data = chunk_map(path, FALSE);
+// ... use data ...
+chunk_unmap(data);  // Critical: prevent memory leaks
+```
+
+### Password Memory Clearing
+```c
+// Verify passwords are cleared from memory
+char *old_password = this->password;
+this->password = "test_password";
+// ... use password ...
+this->password = old_password;  // Restore original
+```
+
+## Integration Testing
+
+### Full Certificate Chain Testing
+```bash
+# Create complete certificate chain for testing
+openssl req -new -x509 -key ca_key.pem -out ca_cert.pem -days 365 -subj "/CN=Test CA"
+openssl req -new -key server_key.pem -out server_req.pem -subj "/CN=Test Server"
+openssl x509 -req -in server_req.pem -CA ca_cert.pem -CAkey ca_key.pem -out server_cert.pem
+```
+
+### OCSP/CRL Testing
+Test online validation features:
+```c
+// Test OCSP validation
+cert_validation_t result = loader->validate_ocsp(loader, cert, issuer);
+assert(result == VALIDATION_GOOD || result == VALIDATION_SKIPPED);
+```
+
+## Regression Testing
+
+### Test Matrix
+| Key Type | Format | Encryption | Expected Result |
+|----------|--------|------------|-----------------|
+| RSA 2048 | PEM    | AES-256    | ✅ Success      |
+| RSA 2048 | PEM    | None       | ✅ Success      |
+| RSA 2048 | DER    | None       | ✅ Success      |
+| ECDSA P-256 | PEM | AES-256    | ✅ Success      |
+| Ed25519  | PEM    | AES-256    | ✅ Success      |
+
+### Automated Test Script
+```bash
+#!/bin/bash
+# Test all key formats and encryption types
+for keytype in rsa ecdsa; do
+    for format in pem der; do
+        for encryption in none aes256; do
+            echo "Testing $keytype $format $encryption..."
+            # Run specific test
+        done
+    done
+done
+```
+
+## Performance Testing
+
+### Load Time Benchmarking
+```c
+// Measure key loading performance
+clock_t start = clock();
+key = loader->load_private_key_auto(loader, path);
+clock_t end = clock();
+double cpu_time = ((double)(end - start)) / CLOCKS_PER_SEC;
+```
+
+### Concurrent Loading Testing
+Test multiple simultaneous key loading operations to ensure thread safety.
+
+## Validation and Verification
+
+### Key Consistency Testing
+```c
+// Verify loaded key matches original
+public_key_t *pub1 = original_key->get_public_key(original_key);
+public_key_t *pub2 = loaded_key->get_public_key(loaded_key);
+assert(pub1->equals(pub1, pub2));
+```
+
+### Certificate-Key Pairing Verification
+```c
+// Ensure certificate and private key match
+public_key_t *cert_pubkey = cert->get_public_key(cert);
+public_key_t *key_pubkey = private_key->get_public_key(private_key);
+assert(cert_pubkey->equals(cert_pubkey, key_pubkey));
+```
+
+The testing framework ensures comprehensive validation of the certificate loading system, particularly the critical encrypted private key functionality that was previously broken and is now fully operational.

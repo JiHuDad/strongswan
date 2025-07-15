@@ -1,0 +1,12 @@
+{
+  "connection_name": "test-encrypted",
+  "local": {
+    "auth": "cert",
+    "cert": "test_certificate.crt",
+    "private_key": "test_encrypted.key",
+    "private_key_passphrase": "testpassword123"
+  },
+  "remote": {
+    "auth": "cert"
+  }
+}

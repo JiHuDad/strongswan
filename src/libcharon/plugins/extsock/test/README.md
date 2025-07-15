@@ -17,6 +17,14 @@ Plugin Layer        (플러그인 생명주기 관리)
 └── Common Layer    (공통 유틸리티, 에러 처리)
 ```
 
+## 📂 테스트 디렉토리 구조
+
+- **`unit/`** - 단위 테스트 (컴포넌트별 격리된 테스트)
+- **`integration/`** - 통합 테스트 (end-to-end 테스트)
+- **`debug/`** - 인증서 로딩 디버그 테스트 (암호화된 private key 처리)
+- **`gtest/`** - Google Test 프레임워크 기반 테스트
+- **`docs/`** - 테스트 관련 문서
+
 ## 🧪 HOW TO TEST
 
 ### 빠른 시작
