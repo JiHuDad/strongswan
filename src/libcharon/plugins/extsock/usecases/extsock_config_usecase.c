@@ -489,5 +489,12 @@ extsock_config_usecase_t *extsock_config_usecase_create(
         .strongswan_adapter = extsock_strongswan_adapter_create(),
     );
 
+    // CRITICAL FIX: JSON Parser가 strongSwan Adapter의 credentials 사용하도록 설정
+    if (this->strongswan_adapter && this->json_parser) {
+        mem_cred_t *strongswan_creds = this->strongswan_adapter->get_credentials(this->strongswan_adapter);
+        this->json_parser->set_strongswan_credentials(this->json_parser, strongswan_creds);
+        EXTSOCK_DBG(1, "JSON parser configured to use strongSwan adapter credentials for PSK sharing");
+    }
+
     return &this->public;
 } 

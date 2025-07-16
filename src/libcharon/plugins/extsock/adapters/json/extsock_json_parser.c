@@ -45,6 +45,11 @@ struct private_extsock_json_parser_t {
     mem_cred_t *creds;
     
     /**
+     * strongSwan Adapter의 credential store (PSK 공유용)
+     */
+    mem_cred_t *strongswan_creds;
+    
+    /**
      * 인증서 로더
      */
     extsock_cert_loader_t *cert_loader;
@@ -320,8 +325,13 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                     const char *secret_str = j_secret->valuestring;
                     chunk_t secret_chunk = chunk_from_str((char*)secret_str);
                     shared_key_t *psk_key = EXTSOCK_SAFE_STRONGSWAN_CREATE(shared_key_create, SHARED_IKE, chunk_clone(secret_chunk));
-                    if (psk_key && this->creds) {
-                        this->creds->add_shared(this->creds, psk_key, psk_identity, NULL);
+                    if (psk_key) {
+                        // CRITICAL FIX: PSK를 strongSwan Adapter credentials에 추가
+                        mem_cred_t *target_creds = this->strongswan_creds ? this->strongswan_creds : this->creds;
+                        target_creds->add_shared(target_creds, psk_key, psk_identity, NULL);
+                        EXTSOCK_DBG(1, "PSK added to %s credentials for ID: %s", 
+                                   this->strongswan_creds ? "strongSwan adapter" : "JSON parser", 
+                                   j_id ? j_id->valuestring : "%any");
                     } else {
                         EXTSOCK_DBG(1, "Failed to create PSK key for ID: %s", j_id ? j_id->valuestring : "%any");
                         if (psk_identity) psk_identity->destroy(psk_identity);
@@ -376,8 +386,9 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                         }
                     }
                     
-                    // credential store에 인증서 추가
-                    this->creds->add_cert(this->creds, TRUE, cert);
+                    // CRITICAL FIX: 인증서를 strongSwan Adapter credentials에 추가
+                    mem_cred_t *target_creds = this->strongswan_creds ? this->strongswan_creds : this->creds;
+                    target_creds->add_cert(target_creds, TRUE, cert);
                 } else {
                     EXTSOCK_DBG(1, "Failed to load certificate from: %s", j_cert->valuestring);
                 }
@@ -429,8 +440,9 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                         EXTSOCK_DBG(1, "WARNING: Private key and certificate do not match!");
                     }
                     
-                    // credential store에 개인키 추가
-                    this->creds->add_key(this->creds, private_key);
+                    // CRITICAL FIX: 개인키를 strongSwan Adapter credentials에 추가
+                    mem_cred_t *target_creds = this->strongswan_creds ? this->strongswan_creds : this->creds;
+                    target_creds->add_key(target_creds, private_key);
                 } else {
                     EXTSOCK_DBG(1, "Failed to load private key from: %s", j_private_key->valuestring);
                     EXTSOCK_DBG(1, "Check: 1) File exists 2) Correct password 3) File format (PEM/DER)");
@@ -578,8 +590,9 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                 certificate_t *ca_cert_item;
                 enumerator_t *ca_enum = ca_certs_list->create_enumerator(ca_certs_list);
                 while (ca_enum->enumerate(ca_enum, &ca_cert_item)) {
-                    // credential store에 CA 인증서 추가
-                    this->creds->add_cert(this->creds, TRUE, ca_cert_item);
+                    // CRITICAL FIX: CA 인증서를 strongSwan Adapter credentials에 추가
+                    mem_cred_t *target_creds = this->strongswan_creds ? this->strongswan_creds : this->creds;
+                    target_creds->add_cert(target_creds, TRUE, ca_cert_item);
                     
                     // auth_cfg에 CA 규칙 추가
                     auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert_item->get_ref(ca_cert_item));
@@ -814,6 +827,13 @@ METHOD(extsock_json_parser_t, parse_config_entity, extsock_config_entity_t *,
     return entity;
 }
 
+METHOD(extsock_json_parser_t, set_strongswan_credentials, void,
+    private_extsock_json_parser_t *this, mem_cred_t *strongswan_creds)
+{
+    this->strongswan_creds = strongswan_creds;
+    EXTSOCK_DBG(2, "JSON parser configured to use strongSwan adapter credentials for PSK");
+}
+
 METHOD(extsock_json_parser_t, destroy, void,
     private_extsock_json_parser_t *this)
 {
@@ -838,15 +858,16 @@ extsock_json_parser_t *extsock_json_parser_create()
             .parse_traffic_selectors = _parse_traffic_selectors,
             .parse_child_configs = _parse_child_configs,
             .parse_config_entity = _parse_config_entity,
+            .set_strongswan_credentials = _set_strongswan_credentials,
             .destroy = _destroy,
         },
         .creds = mem_cred_create(),
+        .strongswan_creds = NULL, // Will be set by config usecase
         .cert_loader = extsock_cert_loader_create(),
     );
 
-    if (this->creds) {
-        lib->credmgr->add_set(lib->credmgr, &this->creds->set);
-    }
+    // JSON parser credentials는 strongSwan에 등록하지 않음
+    // strongSwan Adapter가 통합 credential store 관리
     
     if (!this->cert_loader) {
         EXTSOCK_DBG(1, "Failed to create certificate loader");

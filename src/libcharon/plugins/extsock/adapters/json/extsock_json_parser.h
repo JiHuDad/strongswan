@@ -77,17 +77,29 @@ struct extsock_json_parser_t {
                                cJSON *children_json);
     
     /**
-     * 전체 설정 엔티티 파싱
+     * Config Entity 파싱 (Phase 2 통합)
      *
      * @param this          인스턴스
-     * @param config_json   설정 JSON 문자열
-     * @return              파싱된 설정 엔티티, 실패 시 NULL
+     * @param config_json   JSON 설정 문자열
+     * @return              Config Entity, 실패 시 NULL
      */
     extsock_config_entity_t* (*parse_config_entity)(extsock_json_parser_t *this,
                                                    const char *config_json);
     
     /**
-     * 인스턴스 소멸
+     * strongSwan Adapter credentials 설정
+     * PSK와 인증서를 올바른 credential store에 추가하기 위해 필요
+     *
+     * @param this              인스턴스
+     * @param strongswan_creds  strongSwan adapter의 credential store
+     */
+    void (*set_strongswan_credentials)(extsock_json_parser_t *this,
+                                      mem_cred_t *strongswan_creds);
+    
+    /**
+     * 인스턴스 해제
+     *
+     * @param this      인스턴스
      */
     void (*destroy)(extsock_json_parser_t *this);
 };
