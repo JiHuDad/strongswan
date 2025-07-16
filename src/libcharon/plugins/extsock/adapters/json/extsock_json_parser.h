@@ -11,6 +11,7 @@
 #define EXTSOCK_JSON_PARSER_H_
 
 #include <cjson/cJSON.h>
+#include <credentials/sets/mem_cred.h>
 #include "../../common/extsock_types.h"
 #include "../../interfaces/extsock_config_repository.h"
 
