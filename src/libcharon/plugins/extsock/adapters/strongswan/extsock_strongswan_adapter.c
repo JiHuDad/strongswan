@@ -26,6 +26,11 @@ struct private_extsock_strongswan_adapter_t {
     extsock_strongswan_adapter_t public;
     
     /**
+     * strongSwan configuration backend 인터페이스
+     */
+    backend_t backend;
+    
+    /**
      * 인메모리 자격증명 세트
      */
     mem_cred_t *creds;
@@ -42,11 +47,102 @@ struct private_extsock_strongswan_adapter_t {
 };
 
 /**
+ * strongSwan backend - IKE config 열거자 생성
+ */
+METHOD(backend_t, create_ike_cfg_enumerator, enumerator_t*,
+    private_extsock_strongswan_adapter_t *this, host_t *me, host_t *other)
+{
+    // extsock 플러그인은 peer_cfg를 통해 IKE 설정을 제공하므로 빈 열거자 반환
+    return enumerator_create_empty();
+}
+
+/**
+ * strongSwan backend - Peer config 열거자 생성
+ */
+METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
+    private_extsock_strongswan_adapter_t *this, identification_t *me, identification_t *other)
+{
+    char me_str[64] = "any";
+    char other_str[64] = "any";
+    
+    if (me && me->get_encoding) {
+        chunk_t me_chunk = me->get_encoding(me);
+        snprintf(me_str, sizeof(me_str), "%.*s", (int)me_chunk.len, me_chunk.ptr);
+    }
+    if (other && other->get_encoding) {
+        chunk_t other_chunk = other->get_encoding(other);
+        snprintf(other_str, sizeof(other_str), "%.*s", (int)other_chunk.len, other_chunk.ptr);
+    }
+    
+    EXTSOCK_DBG(1, "BACKEND CALLED! strongSwan is requesting peer_cfg enumerator (me=%s, other=%s)",
+               me_str, other_str);
+    
+    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    int count = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
+    enumerator_t *inner = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
+    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+    
+    EXTSOCK_DBG(1, "BACKEND RESPONSE: Providing %d managed peer configs to strongSwan", count);
+    
+    // 각 peer_cfg 정보도 로그에 출력
+    if (count > 0) {
+        this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+        enumerator_t *debug_enum = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
+        peer_cfg_t *debug_peer;
+        int index = 0;
+        while (debug_enum->enumerate(debug_enum, &debug_peer)) {
+            EXTSOCK_DBG(1, "   [%d] peer_cfg: '%s'", index++, debug_peer->get_name(debug_peer));
+        }
+        debug_enum->destroy(debug_enum);
+        this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+    }
+    
+    return inner;
+}
+
+/**
+ * strongSwan backend - 이름으로 peer config 조회
+ */
+METHOD(backend_t, get_peer_cfg_by_name, peer_cfg_t*,
+    private_extsock_strongswan_adapter_t *this, char *name)
+{
+    if (!name) {
+        EXTSOCK_DBG(1, "BACKEND CALLED! get_peer_cfg_by_name with NULL name");
+        return NULL;
+    }
+    
+    EXTSOCK_DBG(1, "BACKEND CALLED! get_peer_cfg_by_name looking for: '%s'", name);
+    
+    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    enumerator_t *enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
+    peer_cfg_t *peer_cfg, *found = NULL;
+    int total_configs = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
+    
+    EXTSOCK_DBG(1, "   Searching through %d managed peer configs...", total_configs);
+    
+    int index = 0;
+    while (enumerator->enumerate(enumerator, &peer_cfg)) {
+        const char *cfg_name = peer_cfg->get_name(peer_cfg);
+        EXTSOCK_DBG(1, "   [%d] Comparing '%s' vs '%s'", index++, name, cfg_name);
+        if (streq(cfg_name, name)) {
+            found = peer_cfg;
+            EXTSOCK_DBG(1, "   MATCH FOUND!");
+            break;
+        }
+    }
+    enumerator->destroy(enumerator);
+    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+    
+    EXTSOCK_DBG(1, "BACKEND RESPONSE: lookup for '%s': %s", name, found ? "FOUND" : "NOT FOUND");
+    return found;
+}
+
+/**
  * DPD 시작 (기존 start_dpd 함수에서 이동)
  */
 static extsock_error_t start_dpd_internal(const char *ike_sa_name)
 {
-    // 🔴 HIGH PRIORITY: NULL 체크 강화
+    // HIGH PRIORITY: NULL 체크 강화
     EXTSOCK_CHECK_NULL_RET(ike_sa_name, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(charon, EXTSOCK_ERROR_STRONGSWAN_API);
     EXTSOCK_CHECK_NULL_RET(charon->ike_sa_manager, EXTSOCK_ERROR_STRONGSWAN_API);
@@ -60,7 +156,7 @@ static extsock_error_t start_dpd_internal(const char *ike_sa_name)
     
     EXTSOCK_DBG(1, "start_dpd: Starting DPD for IKE_SA '%s'", ike_sa_name);
     
-    // 🟢 CRITICAL FIX: ike_sa->send_dpd() 직접 호출 (queue_task 대신)
+    // CRITICAL FIX: ike_sa->send_dpd() 직접 호출 (queue_task 대신)
     status_t result = ike_sa->send_dpd(ike_sa);
     charon->ike_sa_manager->checkin(charon->ike_sa_manager, ike_sa);
     
@@ -111,15 +207,17 @@ METHOD(extsock_config_repository_t, destroy_repository, void,
 METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     private_extsock_strongswan_adapter_t *this, peer_cfg_t *peer_cfg)
 {
-    // 🔴 HIGH PRIORITY: NULL 체크 강화
+    // HIGH PRIORITY: NULL 체크 강화
     EXTSOCK_CHECK_NULL_RET(this, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(this->peer_cfgs_mutex, EXTSOCK_ERROR_STRONGSWAN_API);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
     
     this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    
+    // CRITICAL: peer_cfg를 관리 목록에 추가
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
-    EXTSOCK_DBG(1, "Added peer_cfg '%s' to managed list", peer_cfg->get_name(peer_cfg));
+    EXTSOCK_DBG(1, "Added peer_cfg '%s' to managed list (backend already registered)", peer_cfg->get_name(peer_cfg));
     
     // start_action이 ACTION_START인 Child SA들에 대해 SA 개시
     enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
@@ -130,11 +228,12 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
                 EXTSOCK_DBG(1, "Initiating CHILD_SA '%s' for peer '%s'",
                            current_child->get_name(current_child), peer_cfg->get_name(peer_cfg));
                 
-                // 🟡 MEDIUM PRIORITY: charon->controller 안전성 체크
+                // MEDIUM PRIORITY: charon->controller 안전성 체크
                 if (charon && charon->controller) {
                     charon->controller->initiate(charon->controller,
                                                peer_cfg, current_child,
                                                NULL, NULL, 0, 0, FALSE);
+                    EXTSOCK_DBG(1, "CHILD_SA initiation requested for '%s'", current_child->get_name(current_child));
                 } else {
                     EXTSOCK_DBG(1, "Warning: charon->controller not available");
                 }
@@ -205,6 +304,12 @@ METHOD(extsock_strongswan_adapter_t, get_credentials, mem_cred_t *,
 METHOD(extsock_strongswan_adapter_t, destroy, void,
     private_extsock_strongswan_adapter_t *this)
 {
+    // CRITICAL: strongSwan backend 제거
+    if (charon && charon->backends) {
+        charon->backends->remove_backend(charon->backends, &this->backend);
+        EXTSOCK_DBG(1, "extsock configuration backend removed from strongSwan");
+    }
+    
     // 관리되는 피어 설정들 해제
     if (this->managed_peer_cfgs) {
         this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
@@ -252,6 +357,11 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
             .get_credentials = _get_credentials,
             .destroy = _destroy,
         },
+        .backend = {
+            .create_ike_cfg_enumerator = _create_ike_cfg_enumerator,
+            .create_peer_cfg_enumerator = _create_peer_cfg_enumerator,
+            .get_peer_cfg_by_name = _get_peer_cfg_by_name,
+        },
         .managed_peer_cfgs = linked_list_create(),
         .peer_cfgs_mutex = mutex_create(MUTEX_TYPE_DEFAULT),
         .creds = mem_cred_create(),
@@ -259,6 +369,14 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
 
     if (this->creds) {
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
+    }
+
+    // CRITICAL: strongSwan backend 등록
+    if (charon && charon->backends) {
+        charon->backends->add_backend(charon->backends, &this->backend);
+        EXTSOCK_DBG(1, "extsock configuration backend registered with strongSwan");
+    } else {
+        EXTSOCK_DBG(1, "Warning: charon->backends not available during initialization");
     }
 
     return &this->public;
