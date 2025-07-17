@@ -50,41 +50,27 @@ struct private_extsock_plugin_t {
 };
 
 /**
- * PLUGIN_CALLBACK: strongSwan backend 등록
+ * PLUGIN_CALLBACK: strongSwan backend 등록 (간단한 지연 등록)
  */
 static bool extsock_plugin_register_backend(private_extsock_plugin_t *this,
                                            plugin_feature_t *feature, bool reg, void *cb_data)
 {
     if (reg)
     {
-        // strongSwan 어댑터는 이미 컨테이너에서 생성됨
-        if (!this->container.strongswan_adapter)
-        {
-            EXTSOCK_DBG(1, "strongSwan adapter not available for backend registration");
-            return FALSE;
-        }
-        
-        // backend 등록
-        if (charon && charon->backends)
-        {
-            backend_t *backend = extsock_strongswan_adapter_get_backend(this->container.strongswan_adapter);
-            charon->backends->add_backend(charon->backends, backend);
-            EXTSOCK_DBG(1, "extsock backend registered via PLUGIN_CALLBACK");
-        }
-        else
-        {
-            EXTSOCK_DBG(1, "charon or charon->backends not ready; backend not registered");
-        }
+        // 간단한 지연 등록: 실제 등록은 나중에 필요할 때 수행
+        EXTSOCK_DBG(1, "extsock plugin callback registered (simple delayed backend registration)");
         return TRUE;
     }
     else
     {
-        // backend 해제 (어댑터는 컨테이너에서 해제됨)
+        // backend 해제
         if (this->container.strongswan_adapter && charon && charon->backends)
         {
             backend_t *backend = extsock_strongswan_adapter_get_backend(this->container.strongswan_adapter);
-            charon->backends->remove_backend(charon->backends, backend);
-            EXTSOCK_DBG(1, "extsock backend unregistered via PLUGIN_CALLBACK");
+            if (backend) {
+                charon->backends->remove_backend(charon->backends, backend);
+                EXTSOCK_DBG(1, "extsock backend unregistered via PLUGIN_CALLBACK");
+            }
         }
         return TRUE;
     }
