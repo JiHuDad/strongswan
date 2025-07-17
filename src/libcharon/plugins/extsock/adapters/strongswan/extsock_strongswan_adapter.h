@@ -16,6 +16,7 @@
 #include <credentials/sets/mem_cred.h>
 #include <collections/linked_list.h>
 #include <threading/mutex.h>
+#include <config/backend.h>
 
 /**
  * strongSwan API 어댑터
@@ -88,5 +89,7 @@ struct extsock_strongswan_adapter_t {
  * @return  strongSwan 어댑터 인스턴스
  */
 extsock_strongswan_adapter_t *extsock_strongswan_adapter_create();
+
+backend_t* extsock_strongswan_adapter_get_backend(extsock_strongswan_adapter_t *this);
 
 #endif /** EXTSOCK_STRONGSWAN_ADAPTER_H_ @}*/ 

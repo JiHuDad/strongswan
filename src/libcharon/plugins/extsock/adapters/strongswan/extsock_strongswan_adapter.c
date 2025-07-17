@@ -225,17 +225,6 @@ METHOD(extsock_config_repository_t, destroy_repository, void,
     // 설정 저장소는 어댑터의 일부이므로 별도 해제 불필요
 }
 
-/**
- * 안전한 backend 등록 함수 (지연 등록)
- */
-static void try_register_backend(private_extsock_strongswan_adapter_t *this) {
-    if (!this->backend_registered && charon && charon->backends) {
-        charon->backends->add_backend(charon->backends, &this->backend);
-        this->backend_registered = 1;
-        EXTSOCK_DBG(1, "extsock backend registered with strongSwan");
-    }
-}
-
 METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     private_extsock_strongswan_adapter_t *this, peer_cfg_t *peer_cfg)
 {
@@ -244,8 +233,7 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
 
-    // strongSwan이 준비된 후에만 backend 등록 시도
-    try_register_backend(this);
+    // PLUGIN_CALLBACK에서 backend 등록이 처리되므로 여기서는 불필요
 
     // peer_cfg를 관리 목록에 추가
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
@@ -418,4 +406,9 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
     // }
 
     return &this->public;
+} 
+
+backend_t* extsock_strongswan_adapter_get_backend(extsock_strongswan_adapter_t *this) {
+    private_extsock_strongswan_adapter_t *priv = (private_extsock_strongswan_adapter_t*)this;
+    return &priv->backend;
 } 
