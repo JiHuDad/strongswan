@@ -57,13 +57,13 @@ static bool extsock_plugin_register_backend(private_extsock_plugin_t *this,
 {
     if (reg)
     {
-        // strongSwan 어댑터 생성
-        this->container.strongswan_adapter = extsock_strongswan_adapter_create();
+        // strongSwan 어댑터는 이미 컨테이너에서 생성됨
         if (!this->container.strongswan_adapter)
         {
-            EXTSOCK_DBG(1, "Failed to create strongSwan adapter");
+            EXTSOCK_DBG(1, "strongSwan adapter not available for backend registration");
             return FALSE;
         }
+        
         // backend 등록
         if (charon && charon->backends)
         {
@@ -79,17 +79,12 @@ static bool extsock_plugin_register_backend(private_extsock_plugin_t *this,
     }
     else
     {
-        // strongSwan 어댑터 해제 및 backend 해제
-        if (this->container.strongswan_adapter)
+        // backend 해제 (어댑터는 컨테이너에서 해제됨)
+        if (this->container.strongswan_adapter && charon && charon->backends)
         {
-            if (charon && charon->backends)
-            {
-                backend_t *backend = extsock_strongswan_adapter_get_backend(this->container.strongswan_adapter);
-                charon->backends->remove_backend(charon->backends, backend);
-                EXTSOCK_DBG(1, "extsock backend unregistered via PLUGIN_CALLBACK");
-            }
-            this->container.strongswan_adapter->destroy(this->container.strongswan_adapter);
-            this->container.strongswan_adapter = NULL;
+            backend_t *backend = extsock_strongswan_adapter_get_backend(this->container.strongswan_adapter);
+            charon->backends->remove_backend(charon->backends, backend);
+            EXTSOCK_DBG(1, "extsock backend unregistered via PLUGIN_CALLBACK");
         }
         return TRUE;
     }
@@ -116,10 +111,19 @@ static bool initialize_container(private_extsock_plugin_t *this)
         return FALSE;
     }
     
-    // 설정 유스케이스 생성 (JSON 파서와 이벤트 유스케이스 주입)
+    // strongSwan 어댑터 생성 (PLUGIN_CALLBACK에서 backend 등록됨)
+    this->container.strongswan_adapter = extsock_strongswan_adapter_create();
+    if (!this->container.strongswan_adapter)
+    {
+        EXTSOCK_DBG(1, "Failed to create strongSwan adapter");
+        return FALSE;
+    }
+    
+    // 설정 유스케이스 생성 (JSON 파서, 이벤트 유스케이스, strongSwan 어댑터 주입)
     this->container.config_usecase = extsock_config_usecase_create(
         this->container.json_parser,
-        this->container.event_usecase
+        this->container.event_usecase,
+        this->container.strongswan_adapter
     );
     if (!this->container.config_usecase)
     {
@@ -141,9 +145,6 @@ static bool initialize_container(private_extsock_plugin_t *this)
     this->container.event_usecase->set_socket_adapter(
         this->container.event_usecase, this->container.socket_adapter);
     
-    // strongSwan 어댑터는 PLUGIN_CALLBACK에서 생성됨
-    this->container.strongswan_adapter = NULL;
-    
     EXTSOCK_DBG(1, "Dependency injection container initialized successfully");
     return TRUE;
 }
@@ -153,18 +154,25 @@ static bool initialize_container(private_extsock_plugin_t *this)
  */
 static void destroy_container(private_extsock_plugin_t *this)
 {
-    // strongSwan 어댑터는 PLUGIN_CALLBACK에서 해제됨
+    // 소켓 어댑터 해제
     if (this->container.socket_adapter) {
         this->container.socket_adapter->destroy(this->container.socket_adapter);
     }
+    // 설정 유스케이스 해제
     if (this->container.config_usecase) {
         this->container.config_usecase->destroy(this->container.config_usecase);
     }
+    // 이벤트 유스케이스 해제
     if (this->container.event_usecase) {
         this->container.event_usecase->destroy(this->container.event_usecase);
     }
+    // JSON 파서 해제
     if (this->container.json_parser) {
         this->container.json_parser->destroy(this->container.json_parser);
+    }
+    // strongSwan 어댑터 해제 (backend는 이미 PLUGIN_CALLBACK에서 해제됨)
+    if (this->container.strongswan_adapter) {
+        this->container.strongswan_adapter->destroy(this->container.strongswan_adapter);
     }
 }
 

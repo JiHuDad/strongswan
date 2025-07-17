@@ -1,0 +1,19 @@
+{
+  "name": "test-backend",
+  "local": {
+    "auth": "psk",
+    "id": "client@example.com"
+  },
+  "remote": {
+    "auth": "psk",
+    "id": "server@example.com"
+  },
+  "children": [
+    {
+      "name": "test-child",
+      "local_ts": "10.0.1.0/24",
+      "remote_ts": "10.0.2.0/24",
+      "start_action": "start"
+    }
+  ]
+} 

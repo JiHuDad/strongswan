@@ -455,9 +455,8 @@ METHOD(extsock_config_usecase_t, get_command_handler, extsock_command_handler_t 
 METHOD(extsock_config_usecase_t, destroy, void,
     private_extsock_config_usecase_t *this)
 {
-    if (this->strongswan_adapter) {
-        this->strongswan_adapter->destroy(this->strongswan_adapter);
-    }
+    // strongSwan 어댑터는 플러그인에서 관리되므로 여기서 해제하지 않음
+    // this->strongswan_adapter->destroy(this->strongswan_adapter);
     free(this);
 }
 
@@ -466,7 +465,8 @@ METHOD(extsock_config_usecase_t, destroy, void,
  */
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *json_parser,
-    extsock_event_usecase_t *event_usecase)
+    extsock_event_usecase_t *event_usecase,
+    extsock_strongswan_adapter_t *strongswan_adapter)
 {
     private_extsock_config_usecase_t *this;
 
@@ -486,7 +486,7 @@ extsock_config_usecase_t *extsock_config_usecase_create(
         },
         .json_parser = json_parser,
         .event_publisher = event_usecase ? event_usecase->get_event_publisher(event_usecase) : NULL,
-        .strongswan_adapter = extsock_strongswan_adapter_create(),
+        .strongswan_adapter = strongswan_adapter,
     );
 
     // CRITICAL FIX: JSON Parser가 strongSwan Adapter의 credentials 사용하도록 설정
