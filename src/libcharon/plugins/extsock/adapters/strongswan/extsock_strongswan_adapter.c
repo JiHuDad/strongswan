@@ -44,6 +44,7 @@ struct private_extsock_strongswan_adapter_t {
      * 피어 설정 목록 접근 보호 플래그 (atomic)
      */
     volatile int access_flag;
+    volatile int backend_registered; // 안전한 backend 등록 플래그
 };
 
 /**
@@ -224,6 +225,17 @@ METHOD(extsock_config_repository_t, destroy_repository, void,
     // 설정 저장소는 어댑터의 일부이므로 별도 해제 불필요
 }
 
+/**
+ * 안전한 backend 등록 함수 (지연 등록)
+ */
+static void try_register_backend(private_extsock_strongswan_adapter_t *this) {
+    if (!this->backend_registered && charon && charon->backends) {
+        charon->backends->add_backend(charon->backends, &this->backend);
+        this->backend_registered = 1;
+        EXTSOCK_DBG(1, "extsock backend registered with strongSwan");
+    }
+}
+
 METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     private_extsock_strongswan_adapter_t *this, peer_cfg_t *peer_cfg)
 {
@@ -231,13 +243,14 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     EXTSOCK_CHECK_NULL_RET(this, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
-    
-    // CRITICAL: No mutex needed - backend methods are thread-safe
-    
-    // CRITICAL: peer_cfg를 관리 목록에 추가
+
+    // strongSwan이 준비된 후에만 backend 등록 시도
+    try_register_backend(this);
+
+    // peer_cfg를 관리 목록에 추가
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
-    EXTSOCK_DBG(1, "Added peer_cfg '%s' to managed list (backend already registered)", peer_cfg->get_name(peer_cfg));
-    
+    EXTSOCK_DBG(1, "Added peer_cfg '%s' to managed list", peer_cfg->get_name(peer_cfg));
+
     // start_action이 ACTION_START인 Child SA들에 대해 SA 개시
     enumerator_t *child_enum = peer_cfg->create_child_cfg_enumerator(peer_cfg);
     child_cfg_t *current_child;
@@ -246,8 +259,6 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
             if (current_child && current_child->get_start_action(current_child) == ACTION_START) {
                 EXTSOCK_DBG(1, "Initiating CHILD_SA '%s' for peer '%s'",
                            current_child->get_name(current_child), peer_cfg->get_name(peer_cfg));
-                
-                // MEDIUM PRIORITY: charon->controller 안전성 체크
                 if (charon && charon->controller) {
                     charon->controller->initiate(charon->controller,
                                                peer_cfg, current_child,
@@ -260,8 +271,6 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
         }
         child_enum->destroy(child_enum);
     }
-    // No mutex unlock needed
-    
     return EXTSOCK_SUCCESS;
 }
 
@@ -378,20 +387,16 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
             .get_peer_cfg_by_name = _get_peer_cfg_by_name,
         },
         .managed_peer_cfgs = linked_list_create(),
-        .access_flag =0,
+        .access_flag = 0,
+        .backend_registered = 0,
         .creds = mem_cred_create(),
     );
 
     // CRITICAL FIX: NULL check for initialization failures
-    if (!this->managed_peer_cfgs || !this->peer_cfgs_mutex || !this->creds) {
+    if (!this->managed_peer_cfgs || !this->creds) {
         EXTSOCK_DBG(1, "Failed to initialize strongSwan adapter components");
-        
-        // Safe cleanup of partially initialized components
         if (this->managed_peer_cfgs) {
             this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
-        }
-        if (this->peer_cfgs_mutex) {
-            this->peer_cfgs_mutex->destroy(this->peer_cfgs_mutex);
         }
         if (this->creds) {
             this->creds->destroy(this->creds);
@@ -404,13 +409,13 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
     }
 
-    // CRITICAL: strongSwan backend 등록
-    if (charon && charon->backends) {
-        charon->backends->add_backend(charon->backends, &this->backend);
-        EXTSOCK_DBG(1, "extsock configuration backend registered with strongSwan");
-    } else {
-        EXTSOCK_DBG(1, "Warning: charon->backends not available during initialization");
-    }
+    // backend 등록은 여기서 하지 않음 (지연 등록)
+    // if (charon && charon->backends) {
+    //     charon->backends->add_backend(charon->backends, &this->backend);
+    //     EXTSOCK_DBG(1, "extsock configuration backend registered with strongSwan");
+    // } else {
+    //     EXTSOCK_DBG(1, "Warning: charon->backends not available during initialization");
+    // }
 
     return &this->public;
 } 
