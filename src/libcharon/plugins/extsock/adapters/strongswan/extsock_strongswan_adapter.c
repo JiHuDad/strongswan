@@ -233,7 +233,12 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
 
-    // PLUGIN_CALLBACK에서 backend 등록이 처리되므로 여기서는 불필요
+    // CRITICAL FIX: Backend 등록 재시도 (PLUGIN_CALLBACK이 실패했을 경우)
+    if (!this->backend_registered && charon && charon->backends) {
+        charon->backends->add_backend(charon->backends, &this->backend);
+        this->backend_registered = 1;
+        EXTSOCK_DBG(1, "extsock backend registered with strongSwan during add_peer_config");
+    }
 
     // peer_cfg를 관리 목록에 추가
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);

@@ -186,9 +186,8 @@ METHOD(plugin_t, get_features, int,
     private_extsock_plugin_t *this, plugin_feature_t *features[])
 {
     static plugin_feature_t f[] = {
-        PLUGIN_NOOP,
+        PLUGIN_CALLBACK((plugin_feature_callback_t)extsock_plugin_register_backend, NULL),
             PLUGIN_PROVIDE(CUSTOM, "extsock"),
-            PLUGIN_CALLBACK((plugin_feature_callback_t)extsock_plugin_register_backend, NULL),
     };
     *features = f;
     return countof(f);
