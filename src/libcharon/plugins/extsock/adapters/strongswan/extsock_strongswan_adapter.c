@@ -62,11 +62,29 @@ METHOD(backend_t, create_ike_cfg_enumerator, enumerator_t*,
 METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     private_extsock_strongswan_adapter_t *this, identification_t *me, identification_t *other)
 {
-    // CRITICAL: NULL check first
-    if (!this || !this->peer_cfgs_mutex || !this->managed_peer_cfgs) {
-        EXTSOCK_DBG(1, "BACKEND ERROR: Invalid adapter state");
+    // CRITICAL: Ultra-defensive NULL checking with detailed logging
+    EXTSOCK_DBG(1, "BACKEND ENTRY: create_peer_cfg_enumerator called");
+    
+    if (!this) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: this pointer is NULL");
         return enumerator_create_empty();
     }
+    
+    EXTSOCK_DBG(1, "BACKEND: this pointer is valid (%p)", this);
+    
+    if (!this->peer_cfgs_mutex) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: peer_cfgs_mutex is NULL");
+        return enumerator_create_empty();
+    }
+    
+    EXTSOCK_DBG(1, "BACKEND: peer_cfgs_mutex is valid (%p)", this->peer_cfgs_mutex);
+    
+    if (!this->managed_peer_cfgs) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: managed_peer_cfgs is NULL");
+        return enumerator_create_empty();
+    }
+    
+    EXTSOCK_DBG(1, "BACKEND: managed_peer_cfgs is valid (%p)", this->managed_peer_cfgs);
     
     char me_str[64] = "any";
     char other_str[64] = "any";
@@ -83,21 +101,34 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     EXTSOCK_DBG(1, "BACKEND CALLED! strongSwan is requesting peer_cfg enumerator (me=%s, other=%s)",
                me_str, other_str);
     
-    // CRITICAL FIX: Simple and safe approach - return direct enumerator
-    // strongSwan typically handles enumerators quickly, so race conditions are minimal
+    // CRITICAL FIX: Ultra-safe mutex operation with detailed logging
+    EXTSOCK_DBG(1, "BACKEND: About to lock mutex...");
+    
+    // Additional validation before mutex operation
+    if (this->peer_cfgs_mutex->lock == NULL) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: mutex lock function is NULL");
+        return enumerator_create_empty();
+    }
+    
     this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    EXTSOCK_DBG(1, "BACKEND: Mutex locked successfully");
     
     int count = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
+    EXTSOCK_DBG(1, "BACKEND: Peer config count: %d", count);
+    
     enumerator_t *enumerator;
     
     if (count == 0) {
+        EXTSOCK_DBG(1, "BACKEND: Creating empty enumerator");
         enumerator = enumerator_create_empty();
     } else {
-        // Return the direct enumerator - strongSwan will process it immediately
+        EXTSOCK_DBG(1, "BACKEND: Creating list enumerator");
         enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
     }
     
+    EXTSOCK_DBG(1, "BACKEND: About to unlock mutex...");
     this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+    EXTSOCK_DBG(1, "BACKEND: Mutex unlocked successfully");
     
     EXTSOCK_DBG(1, "BACKEND RESPONSE: Providing %d managed peer configs to strongSwan", count);
     
