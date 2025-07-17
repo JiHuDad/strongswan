@@ -70,12 +70,14 @@ struct extsock_config_usecase_t {
 /**
  * 설정 관리 유스케이스 생성
  *
- * @param json_parser       JSON 파싱 어댑터
- * @param event_usecase     이벤트 처리 유스케이스
- * @return                  설정 관리 유스케이스 인스턴스
+ * @param json_parser           JSON 파싱 어댑터
+ * @param event_usecase         이벤트 처리 유스케이스
+ * @param strongswan_adapter    strongSwan 어댑터
+ * @return                      설정 관리 유스케이스 인스턴스
  */
 extsock_config_usecase_t *extsock_config_usecase_create(
     extsock_json_parser_t *json_parser,
-    extsock_event_usecase_t *event_usecase);
+    extsock_event_usecase_t *event_usecase,
+    extsock_strongswan_adapter_t *strongswan_adapter);
 
 #endif /** EXTSOCK_CONFIG_USECASE_H_ @}*/ 
