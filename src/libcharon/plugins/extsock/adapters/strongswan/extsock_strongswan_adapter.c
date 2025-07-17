@@ -45,7 +45,90 @@ struct private_extsock_strongswan_adapter_t {
      */
     volatile int access_flag;
     volatile int backend_registered; // 안전한 backend 등록 플래그
+    volatile int backend_registration_attempted; // backend 등록 시도 여부
 };
+
+/**
+ * strongSwan이 완전히 초기화되었는지 확인하는 더 엄격한 함수
+ */
+static bool is_strongswan_fully_ready()
+{
+    // CRITICAL: 모든 필수 컴포넌트 확인
+    if (!lib) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: lib is NULL");
+        return FALSE;
+    }
+    
+    if (!lib->credmgr) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: lib->credmgr is NULL");
+        return FALSE;
+    }
+    
+    if (!charon) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: charon is NULL");
+        return FALSE;
+    }
+    
+    if (!charon->backends) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: charon->backends is NULL");
+        return FALSE;
+    }
+    
+    if (!charon->ike_sa_manager) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: charon->ike_sa_manager is NULL");
+        return FALSE;
+    }
+    
+    if (!charon->controller) {
+        EXTSOCK_DBG(1, "STRONGSWAN CHECK: charon->controller is NULL");
+        return FALSE;
+    }
+    
+    EXTSOCK_DBG(1, "STRONGSWAN CHECK: strongSwan is fully ready");
+    return TRUE;
+}
+
+/**
+ * Backend 등록을 적극적으로 시도하는 함수
+ */
+static extsock_error_t aggressive_register_backend(private_extsock_strongswan_adapter_t *this)
+{
+    // 이미 등록되었으면 스킵
+    if (this->backend_registered) {
+        EXTSOCK_DBG(1, "BACKEND REG: Already registered, skipping");
+        return EXTSOCK_SUCCESS;
+    }
+    
+    // 등록 시도 플래그 설정 (중복 시도 방지)
+    if (this->backend_registration_attempted) {
+        EXTSOCK_DBG(1, "BACKEND REG: Registration already attempted, retrying...");
+        // 재시도 허용
+        this->backend_registration_attempted = 0;
+    }
+    
+    this->backend_registration_attempted = 1;
+    
+    // strongSwan 완전 초기화 상태 확인
+    if (!is_strongswan_fully_ready()) {
+        EXTSOCK_DBG(1, "BACKEND REG: strongSwan not fully ready, will retry later");
+        return EXTSOCK_ERROR_STRONGSWAN_API;
+    }
+    
+    // Backend 가져오기
+    backend_t *backend = extsock_strongswan_adapter_get_backend(&this->public);
+    if (!backend) {
+        EXTSOCK_DBG(1, "BACKEND REG: Failed to get backend from adapter");
+        return EXTSOCK_ERROR_STRONGSWAN_API;
+    }
+    
+    // 실제 등록 수행
+    EXTSOCK_DBG(1, "BACKEND REG: Registering backend with strongSwan");
+    charon->backends->add_backend(charon->backends, backend);
+    
+    this->backend_registered = 1;
+    EXTSOCK_DBG(1, "BACKEND REG: Successfully registered extsock backend");
+    return EXTSOCK_SUCCESS;
+}
 
 /**
  * strongSwan backend - IKE config 열거자 생성
@@ -79,6 +162,12 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     }
     
     EXTSOCK_DBG(1, "BACKEND: managed_peer_cfgs is valid (%p)", this->managed_peer_cfgs);
+    
+    // CRITICAL FIX: Backend 등록 재시도 (첫 번째 호출 시)
+    if (!this->backend_registered && !this->backend_registration_attempted) {
+        EXTSOCK_DBG(1, "BACKEND: Attempting backend registration on first backend call");
+        aggressive_register_backend(this);
+    }
     
     char me_str[64] = "any";
     char other_str[64] = "any";
@@ -233,21 +322,11 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
 
-    // 안전한 Backend 등록 (첫 번째 peer_cfg 추가 시에만)
-    if (!this->backend_registered) {
-        if (charon && charon->backends) {
-            backend_t *backend = extsock_strongswan_adapter_get_backend(&this->public);
-            if (backend) {
-                charon->backends->add_backend(charon->backends, backend);
-                this->backend_registered = 1;
-                EXTSOCK_DBG(1, "extsock backend registered with strongSwan (first peer config)");
-            } else {
-                EXTSOCK_DBG(1, "Failed to get backend from strongSwan adapter");
-                return EXTSOCK_ERROR_STRONGSWAN_API;
-            }
-        } else {
-            EXTSOCK_DBG(1, "Warning: charon->backends not available, will retry later");
-        }
+    // CRITICAL FIX: Backend 등록을 적극적으로 시도
+    extsock_error_t backend_result = aggressive_register_backend(this);
+    if (backend_result != EXTSOCK_SUCCESS) {
+        EXTSOCK_DBG(1, "Backend registration failed, but continuing with peer config addition");
+        // Backend 등록 실패해도 peer_cfg 추가는 계속 진행
     }
 
     // peer_cfg를 관리 목록에 추가
@@ -394,6 +473,7 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
         .managed_peer_cfgs = linked_list_create(),
         .access_flag = 0,
         .backend_registered = 0,
+        .backend_registration_attempted = 0,
         .creds = mem_cred_create(),
     );
 
@@ -410,17 +490,23 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
         return NULL;
     }
 
-    if (this->creds) {
+    // CRITICAL FIX: 안전한 자격증명 세트 등록
+    if (this->creds && lib && lib->credmgr) {
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
+        EXTSOCK_DBG(1, "Credentials set registered with strongSwan");
+    } else {
+        EXTSOCK_DBG(1, "Warning: lib->credmgr not available during initialization");
     }
 
-    // backend 등록은 여기서 하지 않음 (지연 등록)
-    // if (charon && charon->backends) {
-    //     charon->backends->add_backend(charon->backends, &this->backend);
-    //     EXTSOCK_DBG(1, "extsock configuration backend registered with strongSwan");
-    // } else {
-    //     EXTSOCK_DBG(1, "Warning: charon->backends not available during initialization");
-    // }
+    // CRITICAL FIX: Backend 등록을 적극적으로 시도
+    if (is_strongswan_fully_ready()) {
+        EXTSOCK_DBG(1, "strongSwan is ready, attempting immediate backend registration");
+        aggressive_register_backend(this);
+    } else {
+        EXTSOCK_DBG(1, "strongSwan not ready, backend registration will be attempted later");
+    }
+    
+    EXTSOCK_DBG(1, "strongSwan adapter created successfully");
 
     return &this->public;
 } 

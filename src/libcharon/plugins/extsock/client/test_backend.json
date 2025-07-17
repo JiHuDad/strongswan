@@ -1,10 +1,16 @@
 {
   "name": "test-backend",
-  "local": {
+  "ike_cfg": {
+    "version": 2,
+    "local_addrs": ["192.168.1.100"],
+    "remote_addrs": ["192.168.1.200"],
+    "proposals": ["aes128-sha256-modp2048"]
+  },
+  "local_auth": {
     "auth": "psk",
     "id": "client@example.com"
   },
-  "remote": {
+  "remote_auth": {
     "auth": "psk",
     "id": "server@example.com"
   },
@@ -16,4 +22,4 @@
       "start_action": "start"
     }
   ]
-} 
+}
