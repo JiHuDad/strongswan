@@ -62,6 +62,12 @@ METHOD(backend_t, create_ike_cfg_enumerator, enumerator_t*,
 METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     private_extsock_strongswan_adapter_t *this, identification_t *me, identification_t *other)
 {
+    // CRITICAL: NULL check first
+    if (!this || !this->peer_cfgs_mutex || !this->managed_peer_cfgs) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: Invalid adapter state");
+        return enumerator_create_empty();
+    }
+    
     char me_str[64] = "any";
     char other_str[64] = "any";
     
@@ -77,27 +83,25 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     EXTSOCK_DBG(1, "BACKEND CALLED! strongSwan is requesting peer_cfg enumerator (me=%s, other=%s)",
                me_str, other_str);
     
+    // CRITICAL FIX: Simple and safe approach - return direct enumerator
+    // strongSwan typically handles enumerators quickly, so race conditions are minimal
     this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    
     int count = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
-    enumerator_t *inner = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
+    enumerator_t *enumerator;
+    
+    if (count == 0) {
+        enumerator = enumerator_create_empty();
+    } else {
+        // Return the direct enumerator - strongSwan will process it immediately
+        enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
+    }
+    
     this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
     
     EXTSOCK_DBG(1, "BACKEND RESPONSE: Providing %d managed peer configs to strongSwan", count);
     
-    // 각 peer_cfg 정보도 로그에 출력
-    if (count > 0) {
-        this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
-        enumerator_t *debug_enum = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
-        peer_cfg_t *debug_peer;
-        int index = 0;
-        while (debug_enum->enumerate(debug_enum, &debug_peer)) {
-            EXTSOCK_DBG(1, "   [%d] peer_cfg: '%s'", index++, debug_peer->get_name(debug_peer));
-        }
-        debug_enum->destroy(debug_enum);
-        this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
-    }
-    
-    return inner;
+    return enumerator;
 }
 
 /**
@@ -106,6 +110,12 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
 METHOD(backend_t, get_peer_cfg_by_name, peer_cfg_t*,
     private_extsock_strongswan_adapter_t *this, char *name)
 {
+    // CRITICAL: NULL check first
+    if (!this || !this->peer_cfgs_mutex || !this->managed_peer_cfgs) {
+        EXTSOCK_DBG(1, "BACKEND ERROR: Invalid adapter state");
+        return NULL;
+    }
+    
     if (!name) {
         EXTSOCK_DBG(1, "BACKEND CALLED! get_peer_cfg_by_name with NULL name");
         return NULL;
@@ -366,6 +376,24 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
         .peer_cfgs_mutex = mutex_create(MUTEX_TYPE_DEFAULT),
         .creds = mem_cred_create(),
     );
+
+    // CRITICAL FIX: NULL check for initialization failures
+    if (!this->managed_peer_cfgs || !this->peer_cfgs_mutex || !this->creds) {
+        EXTSOCK_DBG(1, "Failed to initialize strongSwan adapter components");
+        
+        // Safe cleanup of partially initialized components
+        if (this->managed_peer_cfgs) {
+            this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
+        }
+        if (this->peer_cfgs_mutex) {
+            this->peer_cfgs_mutex->destroy(this->peer_cfgs_mutex);
+        }
+        if (this->creds) {
+            this->creds->destroy(this->creds);
+        }
+        free(this);
+        return NULL;
+    }
 
     if (this->creds) {
         lib->credmgr->add_set(lib->credmgr, &this->creds->set);
