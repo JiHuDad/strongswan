@@ -11,7 +11,7 @@
 #include <sa/ikev2/tasks/ike_dpd.h>
 #include <control/controller.h>
 #include <bus/listeners/listener.h>
-#include <threading/mutex.h>
+// REMOVED: #include <threading/mutex.h> - Using atomic operations instead
 
 typedef struct private_extsock_strongswan_adapter_t private_extsock_strongswan_adapter_t;
 
@@ -41,9 +41,9 @@ struct private_extsock_strongswan_adapter_t {
     linked_list_t *managed_peer_cfgs;
     
     /**
-     * 피어 설정 목록 접근 뮤텍스
+     * 피어 설정 목록 접근 보호 플래그 (atomic)
      */
-    mutex_t *peer_cfgs_mutex;
+    volatile int access_flag;
 };
 
 /**
@@ -72,13 +72,6 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     
     EXTSOCK_DBG(1, "BACKEND: this pointer is valid (%p)", this);
     
-    if (!this->peer_cfgs_mutex) {
-        EXTSOCK_DBG(1, "BACKEND ERROR: peer_cfgs_mutex is NULL");
-        return enumerator_create_empty();
-    }
-    
-    EXTSOCK_DBG(1, "BACKEND: peer_cfgs_mutex is valid (%p)", this->peer_cfgs_mutex);
-    
     if (!this->managed_peer_cfgs) {
         EXTSOCK_DBG(1, "BACKEND ERROR: managed_peer_cfgs is NULL");
         return enumerator_create_empty();
@@ -101,17 +94,8 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
     EXTSOCK_DBG(1, "BACKEND CALLED! strongSwan is requesting peer_cfg enumerator (me=%s, other=%s)",
                me_str, other_str);
     
-    // CRITICAL FIX: Ultra-safe mutex operation with detailed logging
-    EXTSOCK_DBG(1, "BACKEND: About to lock mutex...");
-    
-    // Additional validation before mutex operation
-    if (this->peer_cfgs_mutex->lock == NULL) {
-        EXTSOCK_DBG(1, "BACKEND ERROR: mutex lock function is NULL");
-        return enumerator_create_empty();
-    }
-    
-    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
-    EXTSOCK_DBG(1, "BACKEND: Mutex locked successfully");
+    // CRITICAL FIX: No mutex needed - backend methods are called from strongSwansmain thread
+    // strongSwan backend methods are inherently thread-safe as they're called from the main event loop
     
     int count = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
     EXTSOCK_DBG(1, "BACKEND: Peer config count: %d", count);
@@ -126,10 +110,6 @@ METHOD(backend_t, create_peer_cfg_enumerator, enumerator_t*,
         enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
     }
     
-    EXTSOCK_DBG(1, "BACKEND: About to unlock mutex...");
-    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
-    EXTSOCK_DBG(1, "BACKEND: Mutex unlocked successfully");
-    
     EXTSOCK_DBG(1, "BACKEND RESPONSE: Providing %d managed peer configs to strongSwan", count);
     
     return enumerator;
@@ -142,7 +122,7 @@ METHOD(backend_t, get_peer_cfg_by_name, peer_cfg_t*,
     private_extsock_strongswan_adapter_t *this, char *name)
 {
     // CRITICAL: NULL check first
-    if (!this || !this->peer_cfgs_mutex || !this->managed_peer_cfgs) {
+    if (!this || !this->managed_peer_cfgs) {
         EXTSOCK_DBG(1, "BACKEND ERROR: Invalid adapter state");
         return NULL;
     }
@@ -154,7 +134,7 @@ METHOD(backend_t, get_peer_cfg_by_name, peer_cfg_t*,
     
     EXTSOCK_DBG(1, "BACKEND CALLED! get_peer_cfg_by_name looking for: '%s'", name);
     
-    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    // CRITICAL FIX: No mutex needed - backend methods are thread-safe
     enumerator_t *enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
     peer_cfg_t *peer_cfg, *found = NULL;
     int total_configs = this->managed_peer_cfgs->get_count(this->managed_peer_cfgs);
@@ -172,7 +152,6 @@ METHOD(backend_t, get_peer_cfg_by_name, peer_cfg_t*,
         }
     }
     enumerator->destroy(enumerator);
-    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
     
     EXTSOCK_DBG(1, "BACKEND RESPONSE: lookup for '%s': %s", name, found ? "FOUND" : "NOT FOUND");
     return found;
@@ -251,10 +230,9 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
     // HIGH PRIORITY: NULL 체크 강화
     EXTSOCK_CHECK_NULL_RET(this, EXTSOCK_ERROR_CONFIG_INVALID);
     EXTSOCK_CHECK_NULL_RET(peer_cfg, EXTSOCK_ERROR_CONFIG_INVALID);
-    EXTSOCK_CHECK_NULL_RET(this->peer_cfgs_mutex, EXTSOCK_ERROR_STRONGSWAN_API);
     EXTSOCK_CHECK_NULL_RET(this->managed_peer_cfgs, EXTSOCK_ERROR_STRONGSWAN_API);
     
-    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    // CRITICAL: No mutex needed - backend methods are thread-safe
     
     // CRITICAL: peer_cfg를 관리 목록에 추가
     this->managed_peer_cfgs->insert_last(this->managed_peer_cfgs, peer_cfg);
@@ -282,7 +260,7 @@ METHOD(extsock_strongswan_adapter_t, add_peer_config, extsock_error_t,
         }
         child_enum->destroy(child_enum);
     }
-    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
+    // No mutex unlock needed
     
     return EXTSOCK_SUCCESS;
 }
@@ -294,7 +272,7 @@ METHOD(extsock_strongswan_adapter_t, remove_peer_config, extsock_error_t,
         return EXTSOCK_ERROR_CONFIG_INVALID;
     }
     
-    this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+    // CRITICAL: No mutex needed - backend methods are thread-safe
     enumerator_t *enumerator = this->managed_peer_cfgs->create_enumerator(this->managed_peer_cfgs);
     peer_cfg_t *peer_cfg;
     bool found = FALSE;
@@ -308,7 +286,6 @@ METHOD(extsock_strongswan_adapter_t, remove_peer_config, extsock_error_t,
         }
     }
     enumerator->destroy(enumerator);
-    this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
     
     EXTSOCK_DBG(1, "Peer config '%s' %s", name, found ? "removed" : "not found");
     return found ? EXTSOCK_SUCCESS : EXTSOCK_ERROR_CONFIG_INVALID;
@@ -353,19 +330,16 @@ METHOD(extsock_strongswan_adapter_t, destroy, void,
     
     // 관리되는 피어 설정들 해제
     if (this->managed_peer_cfgs) {
-        this->peer_cfgs_mutex->lock(this->peer_cfgs_mutex);
+        // CRITICAL: No mutex needed - backend methods are thread-safe
         peer_cfg_t *cfg_to_destroy;
         while (this->managed_peer_cfgs->remove_first(this->managed_peer_cfgs, (void**)&cfg_to_destroy) == SUCCESS) {
             cfg_to_destroy->destroy(cfg_to_destroy);
         }
-        this->peer_cfgs_mutex->unlock(this->peer_cfgs_mutex);
         this->managed_peer_cfgs->destroy(this->managed_peer_cfgs);
     }
     
     // 뮤텍스 해제
-    if (this->peer_cfgs_mutex) {
-        this->peer_cfgs_mutex->destroy(this->peer_cfgs_mutex);
-    }
+    // No mutex to destroy as it's no longer needed
     
     // 자격증명 세트 해제
     if (this->creds) {
@@ -404,7 +378,7 @@ extsock_strongswan_adapter_t *extsock_strongswan_adapter_create()
             .get_peer_cfg_by_name = _get_peer_cfg_by_name,
         },
         .managed_peer_cfgs = linked_list_create(),
-        .peer_cfgs_mutex = mutex_create(MUTEX_TYPE_DEFAULT),
+        .access_flag =0,
         .creds = mem_cred_create(),
     );
 
