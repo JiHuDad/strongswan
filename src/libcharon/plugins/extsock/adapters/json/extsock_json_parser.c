@@ -414,90 +414,160 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                 } else {
                     EXTSOCK_DBG(1, "Failed to load private key from: %s", j_private_key->valuestring);
                 }
+
+                this->cert_loader->set_password(this->cert_loader, NULL); // Reset password
             }
-            
-            // CA 인증서 로딩
+
+            // Support Multiple CA Certificates
+            linked_list_t *ca_certs_list = linked_list_create();
+            int ca_count = 0;
+
+            // Single CA cert (backwards compatibility)
             if (j_ca_cert && cJSON_IsString(j_ca_cert) && j_ca_cert->valuestring) {
                 ca_cert = this->cert_loader->load_certificate(this->cert_loader, j_ca_cert->valuestring);
                 if (ca_cert) {
+                    ca_certs_list->insert_last(ca_certs_list, ca_cert);
+                    ca_count++;
                     EXTSOCK_DBG(2, "CA certificate loaded from: %s", j_ca_cert->valuestring);
-                    
-                    // Phase 3: Advanced trust chain validation
-                    if (cert) {
-                        linked_list_t *ca_list = linked_list_create();
-                        auth_cfg_t *trust_chain;
-                        bool online_validation = TRUE;  // Enable by default
-                        
-                        ca_list->insert_last(ca_list, ca_cert);
-                        
-                        // Check for online validation preferences
-                        bool enable_ocsp = TRUE;  // Default enabled
-                        bool enable_crl = TRUE;   // Default enabled
-                        
-                        if (j_enable_ocsp && cJSON_IsBool(j_enable_ocsp)) {
-                            enable_ocsp = cJSON_IsTrue(j_enable_ocsp);
-                        }
-                        if (j_enable_crl && cJSON_IsBool(j_enable_crl)) {
-                            enable_crl = cJSON_IsTrue(j_enable_crl);
-                        }
-                        
-                        online_validation = enable_ocsp || enable_crl;
-                        
-                        // Configure cert loader for online validation
-                        this->cert_loader->set_online_validation(this->cert_loader, online_validation);
-                        
-                        EXTSOCK_DBG(2, "Building advanced trust chain with OCSP(%s)/CRL(%s) validation", 
-                                   enable_ocsp ? "enabled" : "disabled",
-                                   enable_crl ? "enabled" : "disabled");
-                        trust_chain = this->cert_loader->build_trust_chain(this->cert_loader, 
-                                                                          cert, ca_list, online_validation);
-                        
-                        if (trust_chain) {
-                            enumerator_t *trust_enum;
-                            auth_rule_t rule;
-                            void *value;
-                            
-                            EXTSOCK_DBG(1, "Advanced trust chain validation successful");
-                            
-                            // Extract validation results
-                            trust_enum = trust_chain->create_enumerator(trust_chain);
-                            while (trust_enum->enumerate(trust_enum, &rule, &value)) {
-                                switch (rule) {
-                                    case AUTH_RULE_OCSP_VALIDATION:
-                                        EXTSOCK_DBG(2, "OCSP validation result: %d", (cert_validation_t)(uintptr_t)value);
-                                        break;
-                                    case AUTH_RULE_CRL_VALIDATION:
-                                        EXTSOCK_DBG(2, "CRL validation result: %d", (cert_validation_t)(uintptr_t)value);
-                                        break;
-                                    case AUTH_RULE_CA_CERT:
-                                        EXTSOCK_DBG(2, "Trusted CA found in chain");
-                                        break;
-                                    case AUTH_RULE_IM_CERT:
-                                        EXTSOCK_DBG(2, "Intermediate CA found in chain");
-                                        break;
-                                    default:
-                                        break;
-                                }
-                            }
-                            trust_enum->destroy(trust_enum);
-                            trust_chain->destroy(trust_chain);
-                        } else {
-                            EXTSOCK_DBG(1, "Advanced trust chain validation failed");
-                        }
-                        
-                        ca_list->destroy(ca_list);
-                    }
-                    
-                    // credential store에 CA 인증서 추가 (기존 로직 유지)
-                    this->creds->add_cert(this->creds, TRUE, ca_cert);
-                    
-                    // auth_cfg에 CA 규칙 추가
-                    auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert->get_ref(ca_cert));
                 } else {
                     EXTSOCK_DBG(1, "Failed to load CA certificate from: %s", j_ca_cert->valuestring);
                 }
             }
-            
+
+            // NEW : Multiple CA certs array support
+            cJSON *j_ca_certs = cJSON_GetObjectItem(auth_json, "ca_certs");
+            if (j_ca_certs && cJSON_IsArray(j_ca_certs)) {
+                cJSON *ca_cert_item;
+                cJSON_ArrayForEach(ca_cert_item, j_ca_certs) {
+                    if (cJSON_IsString(ca_cert_item) && ca_cert_item->valuestring) {
+                        certificate_t *ca = this->cert_loader->load_certificate(this->cert_loader, ca_cert_item->valuestring);
+                        if (ca) {
+                            ca_certs_list->insert_last(ca_certs_list, ca);
+                            ca_count++;
+                            EXTSOCK_DBG(2, "CA certificate loaded from: %s", ca_cert_item->valuestring);
+                        } else {
+                            EXTSOCK_DBG(1, "Failed to load CA certificate from: %s", ca_cert_item->valuestring);
+                        }
+                    }
+                }
+            }
+
+            // NEW : Structured CA chain support (root, intermediate, etc.)
+            cJSON *j_ca_chain = cJSON_GetObjectItem(auth_json, "ca_chain");
+            if (j_ca_chain && cJSON_IsObject(j_ca_chain)) {
+                cJSON *j_root_ca = cJSON_GetObjectItem(j_ca_chain, "root_ca");
+                if (j_root_ca && cJSON_IsString(j_root_ca) && j_root_ca->valuestring) {
+                    certificate_t *root_ca = this->cert_loader->load_certificate(this->cert_loader, j_root_ca->valuestring);
+                    if (root_ca) {
+                        ca_certs_list->insert_last(ca_certs_list, root_ca);
+                        ca_count++;
+                        EXTSOCK_DBG(2, "Root CA certificate loaded from: %s", j_root_ca->valuestring);
+                    } else {
+                        EXTSOCK_DBG(1, "Failed to load Root CA certificate from: %s", j_root_ca->valuestring);
+                    }
+                }
+
+                // Intermediate CA
+                cJSON *j_intermediate_cas = cJSON_GetObjectItem(j_ca_chain, "intermediate_cas");
+                if (j_intermediate_cas && cJSON_IsArray(j_intermediate_cas)) {
+                    cJSON *intermediate_ca_item;
+                    int intermediate_ca_count = 0;
+                    cJSON_ArrayForEach(intermediate_ca_item, j_intermediate_cas) {
+                        if (cJSON_IsString(intermediate_ca_item) && intermediate_ca_item->valuestring) {
+                            certificate_t *intermediate_ca = this->cert_loader->load_certificate(this->cert_loader, intermediate_ca_item->valuestring);
+                            if (intermediate_ca) {
+                                ca_certs_list->insert_last(ca_certs_list, intermediate_ca);
+                                ca_count++;
+                                intermediate_ca_count++;
+                                EXTSOCK_DBG(2, "Intermediate CA certificate loaded from: %s", intermediate_ca_item->valuestring);
+                            } else {
+                                EXTSOCK_DBG(1, "Failed to load Intermediate CA certificate from: %s", intermediate_ca_item->valuestring);
+                            }
+                        }
+                    }
+                    EXTSOCK_DBG(1, "Loaded %d intermediate CA certificates", intermediate_ca_count);
+                }
+            }
+
+            EXTSOCK_DBG(1, "Loaded %d CA certificates", ca_count);
+
+            // Phase 3: Advanced trust chain validation
+            if (ca_count > 0 && cert) {
+                auth_cfg_t *trust_chain;
+                bool online_validation = TRUE;  // Enable by default
+
+                // Check for online validation preferences
+                bool enable_ocsp = TRUE;  // Default enabled
+                bool enable_crl = TRUE;   // Default enabled
+
+                if (j_enable_ocsp && cJSON_IsBool(j_enable_ocsp)) {
+                    enable_ocsp = cJSON_IsTrue(j_enable_ocsp);
+                }
+                if (j_enable_crl && cJSON_IsBool(j_enable_crl)) {
+                    enable_crl = cJSON_IsTrue(j_enable_crl);
+                }
+
+                online_validation = enable_ocsp || enable_crl;
+
+                // Configure cert loader for online validation
+                this->cert_loader->set_online_validation(this->cert_loader, online_validation);
+
+                EXTSOCK_DBG(1, "Building advanced trust chain with %d CA(s), OCSP(%s)/CRL(%s) validation", 
+                            ca_count, enable_ocsp ? "enabled" : "disabled",
+                            enable_crl ? "enabled" : "disabled");
+
+                trust_chain = this->cert_loader->build_trust_chain(this->cert_loader, 
+                                                                  cert, ca_certs_list, online_validation);
+                
+                if (trust_chain) {
+                    enumerator_t *trust_enum;
+                    auth_rule_t rule;
+                    void *value;
+                    
+                    EXTSOCK_DBG(1, "Advanced trust chain validation successful");
+
+                    // Extract validation results
+                    trust_enum = trust_chain->create_enumerator(trust_chain);
+                    while (trust_enum->enumerate(trust_enum, &rule, &value)) {
+                        switch (rule) {
+                            case AUTH_RULE_OCSP_VALIDATION:
+                                EXTSOCK_DBG(2, "OCSP validation result: %d", (cert_validation_t)(uintptr_t)value);
+                                break;
+                            case AUTH_RULE_CRL_VALIDATION:
+                                EXTSOCK_DBG(2, "CRL validation result: %d", (cert_validation_t)(uintptr_t)value);
+                                break;
+                            case AUTH_RULE_CA_CERT:
+                                EXTSOCK_DBG(2, "Trusted CA found in chain");
+                                break;
+                            case AUTH_RULE_IM_CERT:
+                                EXTSOCK_DBG(2, "Intermediate CA found in chain");
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+                    trust_enum->destroy(trust_enum);
+                    trust_chain->destroy(trust_chain);
+                } else {
+                    EXTSOCK_DBG(1, "Advanced trust chain validation failed");
+                }
+            }
+
+            // Add all CA certificates to credential store
+            if (ca_count > 0) {
+                certificate_t *ca_cert_item;
+                enumerator_t *ca_enum = ca_certs_list->create_enumerator(ca_certs_list);
+                while (ca_enum->enumerate(ca_enum, (void**)&ca_cert_item)) {
+                    this->creds->add_cert(this->creds, TRUE, ca_cert_item);
+                    auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert_item->get_ref(ca_cert_item));
+                    EXTSOCK_DBG(3, "CA certificate added to credential store and auth config: %Y", ca_cert_item);
+                }
+                ca_enum->destroy(ca_enum);
+            }
+
+            // Clean up CA list (certificates are now referenced by credential store)
+            ca_certs_list->destroy(ca_certs_list);
+
             if (!cert && !ca_cert) {
                 EXTSOCK_DBG(1, "Certificate authentication specified but no certificate files provided");
             }
@@ -513,8 +583,6 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
     }
     return auth_cfg;
 }
-
-
 
 METHOD(extsock_json_parser_t, parse_child_configs, bool,
     private_extsock_json_parser_t *this, peer_cfg_t *peer_cfg, cJSON *children_json_array)
