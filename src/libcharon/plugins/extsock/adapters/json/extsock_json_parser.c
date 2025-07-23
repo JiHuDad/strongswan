@@ -6,21 +6,15 @@
 #include "../../common/extsock_common.h"
 #include "../crypto/extsock_cert_loader.h"
 
-#include <daemon.h>
-#include <config/ike_cfg.h>
-#include <config/peer_cfg.h>
-#include <config/child_cfg.h>
-#include <crypto/proposal/proposal.h>
-#include <networking/host.h>
-#include <credentials/sets/mem_cred.h>
-#include <selectors/traffic_selector.h>
 #include <cjson/cJSON.h>
+#include <daemon.h>
 #include <library.h>
 #include <config/ike_cfg.h>
 #include <config/peer_cfg.h>
 #include <config/child_cfg.h>
 #include <credentials/auth_cfg.h>
 #include <credentials/keys/shared_key.h>
+#include <credentials/sets/mem_cred.h>
 #include <utils/identification.h>
 #include <utils/chunk.h>
 #include <selectors/traffic_selector.h>
@@ -81,13 +75,11 @@ static char* json_array_to_comma_separated_string(cJSON *json_array)
         return strdup("%any");
     }
 
-    // 🔴 HIGH PRIORITY: 안전한 메모리 할당
+    // HIGH PRIORITY: 안전한 메모리 할당
     char *str_result = malloc(result.len + 1);
     if (!str_result) {
         chunk_free(&result);
-        // malloc 실패 시 fallback 문자열도 안전하게 할당
-        char *fallback = strdup("%any");
-        return fallback;  // strdup이 실패하면 NULL 반환 (적절한 에러 처리)
+        return NULL;
     }
     memcpy(str_result, result.ptr, result.len);
     str_result[result.len] = '\0';
@@ -311,15 +303,20 @@ static lifetime_cfg_t* parse_child_lifetime(cJSON *child_json)
     
     cJSON *j_rekey = cJSON_GetObjectItem(j_lifetime, "rekey_time");
     if (j_rekey && cJSON_IsNumber(j_rekey)) {
-        lifetime->time.rekey = j_rekey->valueint;
+        lifetime->time.rekey = j_rekey->valueint * 0.9;
+        lifetime->time.life = lifetime->time.rekey + 20;
+        lifetime->time.jitter = 20;
+        EXTSOCK_DBG(1, "Child rekey_time set to %u seconds", lifetime->time.rekey);
+        EXTSOCK_DBG(1, "Child life_time set to %u seconds", lifetime->time.life);
+        EXTSOCK_DBG(1, "Child jitter set to %u seconds", lifetime->time.jitter);
     }
-    
+
+    /*
     cJSON *j_life = cJSON_GetObjectItem(j_lifetime, "life_time");
     if (j_life && cJSON_IsNumber(j_life)) {
         lifetime->time.life = j_life->valueint;
     }
     
-    /*
     cJSON *j_rekey_bytes = cJSON_GetObjectItem(j_lifetime, "rekey_bytes");
     if (j_rekey_bytes && cJSON_IsNumber(j_rekey_bytes)) {
         lifetime->bytes.rekey = j_rekey_bytes->valueint;
@@ -445,20 +442,26 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                 if (j_private_key_passphrase && cJSON_IsString(j_private_key_passphrase) && j_private_key_passphrase->valuestring) {
                     passphrase = j_private_key_passphrase->valuestring;
                 }
+
+                EXTSOCK_DBG(2, "Loading private key from: %s (passphrase: %s)", 
+                    j_private_key->valuestring, passphrase ? "provided" : "none");
                 
                 // Try to load with provided password first, then auto-resolution
                 if (passphrase) {
-                    private_key = this->cert_loader->load_private_key(this->cert_loader, 
-                                                                      j_private_key->valuestring, (char*)passphrase);
+                    EXTSOCK_DBG(2, "Setting password for private key decryption");
+                    this->cert_loader->set_password(this->cert_loader, (char*)passphrase);
                 }
-                
-                if (!private_key) {
-                    EXTSOCK_DBG(2, "Attempting automatic password resolution for private key");
-                    private_key = this->cert_loader->load_private_key_auto(this->cert_loader, j_private_key->valuestring);
+
+                private_key = this->cert_loader->load_private_key_auto(this->cert_loader,
+                                                                  j_private_key->valuestring);
+
+                if (!private_key && passphrase) {
+                    EXTSOCK_DBG(2, "Auto loading failed, trying with explicit password");
+                    private_key = this->cert_loader->load_private_key(this->cert_loader, j_private_key->valuestring, (char*)passphrase);
                 }
-                
+
                 if (private_key) {
-                    EXTSOCK_DBG(2, "Private key loaded from: %s", j_private_key->valuestring);
+                    EXTSOCK_DBG(1, "Private key loaded from: %s", j_private_key->valuestring);
                     
                     // 개인키와 인증서 매칭 확인
                     if (cert && !this->cert_loader->verify_key_cert_match(this->cert_loader, private_key, cert)) {
