@@ -64,6 +64,7 @@ gcc -o extsock_client extsock_client.c -lcjson
   },
   "ike": {
     "version": 2,                  // IKE 버전 (1 또는 2)
+    "dscp": "000000",              // IKE 패킷 DSCP 값 (6비트 바이너리 문자열)
     "proposals": [
       "aes128-sha256-modp2048"      // IKE 암호/해시/그룹
     ]
@@ -72,6 +73,7 @@ gcc -o extsock_client extsock_client.c -lcjson
     {
       "name": "net1",              // CHILD_SA 이름
       "mode": "tunnel",            // 모드 (tunnel, transport)
+      "copy_dscp": "out",          // DSCP 복사 모드 (out, in, yes, no)
       "proposals": [
         "aes128gcm16-prfsha256-modp2048" // ESP 암호/PRF/그룹
       ],
@@ -94,10 +96,16 @@ gcc -o extsock_client extsock_client.c -lcjson
   - `psk`: 사전 공유 키(PSK, `method`가 `psk`일 때)
 - `ike`: IKE SA 관련 설정
   - `version`: IKE 버전(1 또는 2)
+  - `dscp`: IKE 패킷 DSCP 값(6비트 바이너리 문자열, 예: `"101110"` = EF)
   - `proposals`: IKE 암호/해시/그룹 조합(문자열 배열)
 - `children`: CHILD_SA(터널) 설정 목록
   - `name`: CHILD_SA 이름
   - `mode`: 터널 모드(`tunnel`, `transport`)
+  - `copy_dscp`: DSCP 복사 모드(`out`, `in`, `yes`, `no`)
+    - `out`: 내부 → 외부 헤더로만 복사 (기본값)
+    - `in`: 외부 → 내부 헤더로만 복사
+    - `yes`: 양방향 복사
+    - `no`: 복사 안함
   - `proposals`: ESP 암호/PRF/그룹 조합(문자열 배열)
   - `local_ts`: 로컬 트래픽 선택자(예: `10.0.0.1/32`)
   - `remote_ts`: 원격 트래픽 선택자
@@ -105,4 +113,45 @@ gcc -o extsock_client extsock_client.c -lcjson
   - `delay`: DPD 체크 주기(초)
   - `timeout`: DPD 타임아웃(초)
 
-실제 적용 시에는 환경에 맞게 값을 수정해서 사용하세요. 
+실제 적용 시에는 환경에 맞게 값을 수정해서 사용하세요.
+
+## DSCP 설정 예제
+
+### QoS 기반 터널 설정
+```json
+{
+  "auth": {
+    "id": "client1",
+    "remote_id": "server1", 
+    "method": "psk",
+    "psk": "secret123"
+  },
+  "ike": {
+    "version": 2,
+    "dscp": "101110",  // Expedited Forwarding (EF)
+    "proposals": ["aes128-sha256-modp2048"]
+  },
+  "children": [
+    {
+      "name": "voice",
+      "copy_dscp": "yes",  // 양방향 복사
+      "local_ts": ["10.0.1.0/24"],
+      "remote_ts": ["192.168.1.0/24"],
+      "esp_proposals": ["aes128gcm16-prfsha256-modp2048"]
+    },
+    {
+      "name": "data", 
+      "copy_dscp": "out",  // 기본 복사
+      "local_ts": ["10.0.2.0/24"],
+      "remote_ts": ["192.168.2.0/24"],
+      "esp_proposals": ["aes128gcm16-prfsha256-modp2048"]
+    }
+  ]
+}
+```
+
+### 일반적인 DSCP 값
+- `"000000"`: Best Effort (BE) - 기본값
+- `"101110"`: Expedited Forwarding (EF) - 음성/실시간 트래픽
+- `"101100"`: Assured Forwarding (AF41) - 우선순위 데이터
+- `"100010"`: Class Selector (CS1) - 낮은 우선순위 

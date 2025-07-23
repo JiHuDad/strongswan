@@ -26,6 +26,7 @@
 #include <selectors/traffic_selector.h>
 #include <collections/linked_list.h>
 #include <utils/debug.h>
+#include <ipsec/ipsec_types.h>
 
 typedef struct private_extsock_json_parser_t private_extsock_json_parser_t;
 
@@ -107,6 +108,51 @@ static action_t string_to_action(const char* action_str)
     if (streq(action_str, "hold")) return ACTION_TRAP;
     if (streq(action_str, "restart")) return ACTION_START;
     return ACTION_NONE;
+}
+
+/**
+ * 문자열을 dscp_copy_t로 변환
+ */
+static dscp_copy_t string_to_dscp_copy(const char* dscp_str) 
+{
+    if (!dscp_str) return DSCP_COPY_OUT_ONLY;  // 기본값
+    
+    if (streq(dscp_str, "out")) return DSCP_COPY_OUT_ONLY;
+    if (streq(dscp_str, "in")) return DSCP_COPY_IN_ONLY;
+    if (streq(dscp_str, "yes")) return DSCP_COPY_YES;
+    if (streq(dscp_str, "no")) return DSCP_COPY_NO;
+    
+    EXTSOCK_DBG(1, "Unknown DSCP copy mode: %s, using default 'out'", dscp_str);
+    return DSCP_COPY_OUT_ONLY;  // 기본값
+}
+
+/**
+ * 6비트 바이너리 문자열을 DSCP 값으로 변환
+ */
+static uint8_t parse_dscp_value(const char* dscp_str)
+{
+    if (!dscp_str) {
+        return 0;  // 기본값
+    }
+    
+    size_t len = strlen(dscp_str);
+    if (len != 6) {
+        EXTSOCK_DBG(1, "Invalid DSCP string length: %zu (expected 6), using default 0", len);
+        return 0;  // 기본값
+    }
+    
+    uint8_t dscp = 0;
+    for (int i = 0; i < 6; i++) {
+        if (dscp_str[i] == '1') {
+            dscp |= (1 << (5 - i));
+        } else if (dscp_str[i] != '0') {
+            EXTSOCK_DBG(1, "Invalid DSCP character at position %d: '%c' (expected '0' or '1'), using default 0", i, dscp_str[i]);
+            return 0;  // 잘못된 문자
+        }
+    }
+    
+    EXTSOCK_DBG(2, "Parsed DSCP value: %s -> 0x%02x", dscp_str, dscp);
+    return dscp;
 }
 
 METHOD(extsock_json_parser_t, parse_proposals, linked_list_t *,
@@ -196,6 +242,16 @@ METHOD(extsock_json_parser_t, parse_ike_config, ike_cfg_t *,
         ike_create_cfg.version = j_version->valueint;
     } else {
         ike_create_cfg.version = IKE_ANY; 
+    }
+    
+    // DSCP 설정 파싱
+    cJSON *j_dscp = cJSON_GetObjectItem(ike_json, "dscp");
+    if (j_dscp && cJSON_IsString(j_dscp) && j_dscp->valuestring) {
+        ike_create_cfg.dscp = parse_dscp_value(j_dscp->valuestring);
+        EXTSOCK_DBG(2, "IKE DSCP set to: 0x%02x", ike_create_cfg.dscp);
+    } else {
+        ike_create_cfg.dscp = 0;  // 기본값
+        EXTSOCK_DBG(2, "IKE DSCP using default: 0x00");
     }
     
     // 포트 설정 - 안전한 포트 가져오기
@@ -621,6 +677,16 @@ METHOD(extsock_json_parser_t, parse_child_configs, bool,
             child_create_cfg.dpd_action = string_to_action(j_dpd_action->valuestring);
         } else {
             child_create_cfg.dpd_action = ACTION_NONE; 
+        }
+
+        // DSCP 복사 모드 파싱
+        cJSON *j_copy_dscp = cJSON_GetObjectItem(child_json, "copy_dscp");
+        if (j_copy_dscp && cJSON_IsString(j_copy_dscp) && j_copy_dscp->valuestring) {
+            child_create_cfg.copy_dscp = string_to_dscp_copy(j_copy_dscp->valuestring);
+            EXTSOCK_DBG(2, "CHILD DSCP copy mode set to: %s", j_copy_dscp->valuestring);
+        } else {
+            child_create_cfg.copy_dscp = DSCP_COPY_OUT_ONLY;  // 기본값
+            EXTSOCK_DBG(2, "CHILD DSCP copy mode using default: out");
         }
 
         // CHILD SA lifetime 설정 파싱

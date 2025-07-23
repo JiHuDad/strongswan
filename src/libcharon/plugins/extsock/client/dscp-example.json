@@ -1,0 +1,39 @@
+{
+  "auth": {
+    "id": "client1",
+    "remote_id": "server1",
+    "method": "psk",
+    "psk": "secret123"
+  },
+  "ike": {
+    "version": 2,
+    "dscp": "101110",
+    "proposals": [
+      "aes128-sha256-modp2048"
+    ]
+  },
+  "children": [
+    {
+      "name": "voice",
+      "copy_dscp": "yes",
+      "local_ts": ["10.0.1.0/24"],
+      "remote_ts": ["192.168.1.0/24"],
+      "esp_proposals": [
+        "aes128gcm16-prfsha256-modp2048"
+      ]
+    },
+    {
+      "name": "data",
+      "copy_dscp": "out",
+      "local_ts": ["10.0.2.0/24"],
+      "remote_ts": ["192.168.2.0/24"],
+      "esp_proposals": [
+        "aes128gcm16-prfsha256-modp2048"
+      ]
+    }
+  ],
+  "dpd": {
+    "delay": 10,
+    "timeout": 30
+  }
+} 
