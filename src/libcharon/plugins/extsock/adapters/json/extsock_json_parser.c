@@ -559,7 +559,12 @@ METHOD(extsock_json_parser_t, parse_auth_config, auth_cfg_t *,
                 enumerator_t *ca_enum = ca_certs_list->create_enumerator(ca_certs_list);
                 while (ca_enum->enumerate(ca_enum, (void**)&ca_cert_item)) {
                     this->creds->add_cert(this->creds, TRUE, ca_cert_item);
-                    auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert_item->get_ref(ca_cert_item));
+                    if (ca_cert_item->issued_by(ca_cert_item, ca_cert_item, NULL)) {
+                        auth_cfg->add(auth_cfg, AUTH_RULE_CA_CERT, ca_cert_item->get_ref(ca_cert_item));
+                    } else {
+                        auth_cfg->add(auth_cfg, AUTH_RULE_IM_CERT, ca_cert_item->get_ref(ca_cert_item));
+                    }
+
                     EXTSOCK_DBG(3, "CA certificate added to credential store and auth config: %Y", ca_cert_item);
                 }
                 ca_enum->destroy(ca_enum);
