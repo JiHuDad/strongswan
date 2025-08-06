@@ -24,15 +24,16 @@ ADAPTER_SRCS = $(ADAPTER_DIR)/json/extsock_json_parser.c \
                $(ADAPTER_DIR)/socket/extsock_socket_adapter.c \
                $(ADAPTER_DIR)/strongswan/extsock_strongswan_adapter.c
 USECASE_SRCS = $(USECASE_DIR)/extsock_config_usecase.c \
-               $(USECASE_DIR)/extsock_event_usecase.c
+               $(USECASE_DIR)/extsock_event_usecase.c \
+               $(USECASE_DIR)/extsock_failover_manager.c
 DOMAIN_SRCS = $(DOMAIN_DIR)/extsock_config_entity.c
 
 # 모든 구현 소스
 IMPL_SRCS = $(COMMON_SRCS) $(ADAPTER_SRCS) $(USECASE_SRCS) $(DOMAIN_SRCS)
 
 # 테스트 타겟들
-UNIT_TESTS = test_simple test_json_parser test_socket_adapter test_config_usecase test_event_usecase test_config_entity test_plugin_lifecycle test_error_scenarios test_simple_unit test_json_parser_simple test_socket_adapter_simple test_plugin_simple test_json_parser_real test_socket_adapter_real test_config_usecase_real test_event_usecase_real test_domain_entity_real
-INTEGRATION_TESTS = test_full_workflow test_complete_workflow
+UNIT_TESTS = test_simple test_json_parser test_socket_adapter test_config_usecase test_event_usecase test_config_entity test_plugin_lifecycle test_error_scenarios test_simple_unit test_json_parser_simple test_socket_adapter_simple test_plugin_simple test_json_parser_real test_socket_adapter_real test_config_usecase_real test_event_usecase_real test_domain_entity_real test_failover_manager_simple
+INTEGRATION_TESTS = test_full_workflow test_complete_workflow test_failover_integration
 ALL_TESTS = $(UNIT_TESTS) $(INTEGRATION_TESTS)
 
 # 기본 타겟
@@ -91,12 +92,18 @@ test_event_usecase_real: unit/test_event_usecase_real.c $(COMMON_SRCS)
 test_domain_entity_real: unit/test_domain_entity_real.c $(COMMON_SRCS)
 	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
 
+test_failover_manager_simple: unit/test_failover_manager_simple.c
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
 # 통합 테스트들
 test_full_workflow: integration/test_full_workflow.c $(IMPL_SRCS)
 	$(CC) $(CFLAGS) $< $(IMPL_SRCS) -o $@ $(LDFLAGS)
 
 test_complete_workflow: integration/test_complete_workflow.c $(COMMON_SRCS)
 	$(CC) $(CFLAGS) $< $(COMMON_SRCS) -o $@ $(LDFLAGS)
+
+test_failover_integration: integration/test_failover_integration.c $(IMPL_SRCS)
+	$(CC) $(CFLAGS) $< $(USECASE_DIR)/extsock_failover_manager.c $(COMMON_SRCS) -o $@ $(LDFLAGS)
 
 # 테스트 실행
 run-unit: $(UNIT_TESTS)
