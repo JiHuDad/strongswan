@@ -8,6 +8,7 @@
 #include "adapters/socket/extsock_socket_adapter.h"
 #include "usecases/extsock_config_usecase.h"
 #include "usecases/extsock_event_usecase.h"
+#include "interfaces/extsock_failover_manager.h"
 
 #include <daemon.h>
 #include <threading/thread.h>
@@ -23,6 +24,7 @@ typedef struct extsock_di_container_t {
     extsock_socket_adapter_t *socket_adapter;
     extsock_config_usecase_t *config_usecase;
     extsock_event_usecase_t *event_usecase;
+    extsock_failover_manager_t *failover_manager;
 } extsock_di_container_t;
 
 /**
@@ -75,6 +77,15 @@ static bool initialize_container(private_extsock_plugin_t *this)
         return FALSE;
     }
     
+    // Failover Manager 생성 (Config Usecase 의존성)
+    this->container.failover_manager = extsock_failover_manager_create(
+        this->container.config_usecase
+    );
+    if (!this->container.failover_manager) {
+        EXTSOCK_DBG(1, "Failed to create failover manager");
+        return FALSE;
+    }
+    
     // 소켓 어댑터 생성 (명령 처리기 주입)
     this->container.socket_adapter = extsock_socket_adapter_create(
         this->container.config_usecase
@@ -84,9 +95,12 @@ static bool initialize_container(private_extsock_plugin_t *this)
         return FALSE;
     }
     
-    // 이벤트 유스케이스에 소켓 어댑터 주입 (순환 참조 해결)
+    // 이벤트 유스케이스에 의존성 주입 (순환 참조 해결)
     this->container.event_usecase->set_socket_adapter(
         this->container.event_usecase, this->container.socket_adapter);
+    
+    this->container.event_usecase->set_failover_manager(
+        this->container.event_usecase, this->container.failover_manager);
     
     EXTSOCK_DBG(1, "Dependency injection container initialized successfully");
     return TRUE;
@@ -97,14 +111,18 @@ static bool initialize_container(private_extsock_plugin_t *this)
  */
 static void destroy_container(private_extsock_plugin_t *this)
 {
+    // 역순으로 해제 (의존성 순서 고려)
     if (this->container.socket_adapter) {
         this->container.socket_adapter->destroy(this->container.socket_adapter);
     }
-    if (this->container.config_usecase) {
-        this->container.config_usecase->destroy(this->container.config_usecase);
-    }
     if (this->container.event_usecase) {
         this->container.event_usecase->destroy(this->container.event_usecase);
+    }
+    if (this->container.failover_manager) {
+        this->container.failover_manager->destroy(this->container.failover_manager);
+    }
+    if (this->container.config_usecase) {
+        this->container.config_usecase->destroy(this->container.config_usecase);
     }
     if (this->container.json_parser) {
         this->container.json_parser->destroy(this->container.json_parser);

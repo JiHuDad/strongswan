@@ -358,6 +358,49 @@ METHOD(extsock_command_handler_t, destroy_handler, void,
     // 실제로는 아무것도 할 필요 없음 - 유스케이스가 전체적으로 해제될 때 처리됨
 }
 
+METHOD(extsock_config_usecase_t, add_peer_config_and_initiate, extsock_error_t,
+    private_extsock_config_usecase_t *this, peer_cfg_t *peer_cfg)
+{
+    if (!peer_cfg) {
+        return EXTSOCK_ERROR_INVALID_PARAMETER;
+    }
+    
+    const char *peer_name = peer_cfg->get_name(peer_cfg);
+    EXTSOCK_DBG(1, "Adding failover peer config '%s' and initiating connection", peer_name);
+    
+    // 1. strongSwan에 설정 등록
+    extsock_error_t result = this->strongswan_adapter->add_peer_config(
+        this->strongswan_adapter, peer_cfg);
+    
+    if (result != EXTSOCK_SUCCESS) {
+        EXTSOCK_DBG(1, "Failed to add peer config '%s'", peer_name);
+        peer_cfg->destroy(peer_cfg);  // 실패 시 정리
+        return result;
+    }
+    
+    // 2. 즉시 연결 시도 (첫 번째 child_cfg 사용)
+    enumerator_t *enumerator = peer_cfg->create_child_cfg_enumerator(peer_cfg);
+    child_cfg_t *child_cfg = NULL;
+    if (enumerator->enumerate(enumerator, &child_cfg)) {
+        result = this->strongswan_adapter->initiate_child_sa(
+            this->strongswan_adapter, peer_cfg, child_cfg);
+    } else {
+        EXTSOCK_DBG(1, "No child config found in peer config '%s'", peer_name);
+        result = EXTSOCK_ERROR_CONFIG_INVALID;
+    }
+    enumerator->destroy(enumerator);
+    
+    if (result == EXTSOCK_SUCCESS) {
+        EXTSOCK_DBG(1, "Failover connection '%s' initiated successfully", peer_name);
+    } else {
+        EXTSOCK_DBG(1, "Failed to initiate failover connection '%s' (error: %d)", 
+                   peer_name, result);
+        // 연결 실패해도 설정은 남겨둠 (재시도 가능)
+    }
+    
+    return result;
+}
+
 METHOD(extsock_config_usecase_t, get_command_handler, extsock_command_handler_t *,
     private_extsock_config_usecase_t *this)
 {
@@ -387,6 +430,7 @@ extsock_config_usecase_t *extsock_config_usecase_create(
             .apply_json_config = _apply_json_config,
             .remove_config = _remove_config,
             .start_dpd = _start_dpd,
+            .add_peer_config_and_initiate = _add_peer_config_and_initiate,
             .get_command_handler = _get_command_handler,
             .destroy = _destroy,
         },

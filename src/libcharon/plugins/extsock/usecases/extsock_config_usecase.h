@@ -13,6 +13,7 @@
 #include "../common/extsock_types.h"
 #include "../interfaces/extsock_command_handler.h"
 #include "../interfaces/extsock_event_publisher.h"
+#include <config/peer_cfg.h>
 
 typedef struct extsock_config_usecase_t extsock_config_usecase_t;
 typedef struct extsock_json_parser_t extsock_json_parser_t;
@@ -52,6 +53,16 @@ struct extsock_config_usecase_t {
      */
     extsock_error_t (*start_dpd)(extsock_config_usecase_t *this,
                                 const char *ike_sa_name);
+    
+    /**
+     * Peer 설정 추가 및 즉시 연결 시도 (Failover용)
+     *
+     * @param this      인스턴스
+     * @param peer_cfg  추가할 peer_cfg (소유권 이전됨)
+     * @return          성공 시 EXTSOCK_SUCCESS
+     */
+    extsock_error_t (*add_peer_config_and_initiate)(extsock_config_usecase_t *this, 
+                                                    peer_cfg_t *peer_cfg);
     
     /**
      * 명령 처리기 인터페이스 조회

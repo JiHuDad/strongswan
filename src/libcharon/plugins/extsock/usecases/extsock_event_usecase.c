@@ -36,6 +36,11 @@ struct private_extsock_event_usecase_t {
      * 소켓 어댑터
      */
     extsock_socket_adapter_t *socket_adapter;
+    
+    /**
+     * Failover Manager (의존성 주입)
+     */
+    extsock_failover_manager_t *failover_manager;
 };
 
 /**
@@ -252,6 +257,49 @@ METHOD(listener_t, child_updown, bool,
 }
 
 /**
+ * IKE SA 상태 변화 이벤트 처리 (IKE_DESTROYING 감지용)
+ */
+METHOD(listener_t, ike_state_change, bool,
+    private_extsock_event_usecase_t *this, ike_sa_t *ike_sa, ike_sa_state_t state)
+{
+    if (!ike_sa) {
+        return TRUE;
+    }
+    
+    const char *ike_name = ike_sa->get_name(ike_sa);
+    
+    switch (state) {
+        case IKE_DESTROYING:
+            EXTSOCK_DBG(1, "IKE_DESTROYING detected for IKE SA '%s'", ike_name);
+            
+            // Failover Manager를 통한 자동 전환
+            if (this->failover_manager) {
+                this->failover_manager->handle_connection_failure(
+                    this->failover_manager, ike_sa);
+            } else {
+                EXTSOCK_DBG(2, "No failover manager available for connection '%s'", ike_name);
+            }
+            break;
+            
+        case IKE_ESTABLISHED:
+            EXTSOCK_DBG(2, "IKE_ESTABLISHED for IKE SA '%s'", ike_name);
+            
+            // 연결 성공 시 재시도 카운터 초기화
+            if (this->failover_manager) {
+                this->failover_manager->reset_retry_count(this->failover_manager, ike_name);
+            }
+            break;
+            
+        default:
+            // 다른 상태들은 로깅만
+            EXTSOCK_DBG(3, "IKE SA '%s' state changed to %d", ike_name, state);
+            break;
+    }
+    
+    return TRUE;
+}
+
+/**
  * IKE SA rekey 이벤트 처리
  */
 METHOD(listener_t, ike_rekey, bool,
@@ -347,6 +395,13 @@ METHOD(extsock_event_usecase_t, set_socket_adapter, void,
     this->socket_adapter = socket_adapter;
 }
 
+METHOD(extsock_event_usecase_t, set_failover_manager, void,
+    private_extsock_event_usecase_t *this, extsock_failover_manager_t *failover_manager)
+{
+    this->failover_manager = failover_manager;
+    EXTSOCK_DBG(2, "Failover Manager set in Event Usecase");
+}
+
 METHOD(extsock_event_usecase_t, destroy, void,
     private_extsock_event_usecase_t *this)
 {
@@ -367,12 +422,14 @@ extsock_event_usecase_t *extsock_event_usecase_create()
             .listener = {
                 .ike_updown = _ike_updown,
                 .child_updown = _child_updown,
+                .ike_state_change = _ike_state_change,
                 .ike_rekey = _ike_rekey,
                 .child_rekey = _child_rekey,
             },
             .handle_child_updown = _handle_child_updown,
             .get_event_publisher = _get_event_publisher,
             .set_socket_adapter = _set_socket_adapter,
+            .set_failover_manager = _set_failover_manager,
             .destroy = _destroy,
         },
         .event_publisher = {
@@ -381,6 +438,7 @@ extsock_event_usecase_t *extsock_event_usecase_create()
             .destroy = _destroy_publisher,
         },
         .socket_adapter = NULL, // 의존성 주입으로 설정됨
+        .failover_manager = NULL, // 의존성 주입으로 설정됨
     );
 
     // 버스 리스너 등록

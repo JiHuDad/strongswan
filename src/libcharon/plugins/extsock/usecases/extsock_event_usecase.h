@@ -12,6 +12,7 @@
 
 #include "../common/extsock_types.h"
 #include "../interfaces/extsock_event_publisher.h"
+#include "../interfaces/extsock_failover_manager.h"
 
 #include <bus/bus.h>
 #include <sa/ike_sa.h>
@@ -56,6 +57,15 @@ struct extsock_event_usecase_t {
      */
     void (*set_socket_adapter)(extsock_event_usecase_t *this,
                               struct extsock_socket_adapter_t *socket_adapter);
+    
+    /**
+     * Failover Manager 설정 (의존성 주입용)
+     *
+     * @param this              인스턴스
+     * @param failover_manager  Failover Manager
+     */
+    void (*set_failover_manager)(extsock_event_usecase_t *this,
+                                extsock_failover_manager_t *failover_manager);
     
     /**
      * 인스턴스 소멸

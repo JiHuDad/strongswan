@@ -38,7 +38,9 @@ libstrongswan_extsock_la_SOURCES = \
     usecases/extsock_config_usecase.h \
     usecases/extsock_config_usecase.c \
     usecases/extsock_event_usecase.h \
-    usecases/extsock_event_usecase.c
+    usecases/extsock_event_usecase.c \
+    interfaces/extsock_failover_manager.h \
+    usecases/extsock_failover_manager.c
 
 # cJSON 라이브러리 링크
 libstrongswan_extsock_la_LIBADD = $(EXTSOCK_LIBS)
