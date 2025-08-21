@@ -254,24 +254,26 @@ static bool copy_auth_configs(peer_cfg_t *src, peer_cfg_t *dst)
 }
 
 /**
- * Child configs 복사
+ * Child configs 복사 (strongSwan의 replace_child_cfgs 활용)
  */
 static bool copy_child_configs(peer_cfg_t *src, peer_cfg_t *dst)
 {
-    enumerator_t *enumerator;
-    child_cfg_t *child_cfg;
+    enumerator_t *replace_enum;
     
     if (!src || !dst) {
         return FALSE;
     }
     
-    enumerator = src->create_child_cfg_enumerator(src);
-    while (enumerator->enumerate(enumerator, &child_cfg)) {
-        dst->add_child_cfg(dst, child_cfg->get_ref(child_cfg));
+    // strongSwan의 built-in 메서드로 원자적 복사
+    replace_enum = dst->replace_child_cfgs(dst, src);
+    if (replace_enum) {
+        replace_enum->destroy(replace_enum);
+        EXTSOCK_DBG(3, "Successfully replaced child configs using strongSwan API");
+        return TRUE;
     }
-    enumerator->destroy(enumerator);
     
-    return TRUE;
+    EXTSOCK_DBG(1, "Failed to replace child configs");
+    return FALSE;
 }
 
 METHOD(extsock_failover_manager_t, select_next_segw, char*,
