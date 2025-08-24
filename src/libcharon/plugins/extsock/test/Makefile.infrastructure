@@ -1,0 +1,89 @@
+# Infrastructure Tests Makefile
+# Tests the Mock system itself before using it for actual plugin tests
+
+CC = gcc
+CFLAGS = -std=c99 -Wall -Wextra -g -O0 --coverage
+CFLAGS += -DUNIT_TEST_INFRASTRUCTURE
+CFLAGS += `pkg-config --cflags check`
+INCLUDES = -Iinfrastructure
+
+# Basic libraries for infrastructure tests
+LIBS = `pkg-config --libs check` -lm -lpthread
+
+# Infrastructure test sources
+INFRA_SRCS = infrastructure/strongswan_mocks.c
+INFRA_HEADERS = infrastructure/strongswan_mocks.h
+
+# Test targets
+INFRA_TEST = test_strongswan_mocks
+ALL_TESTS = $(INFRA_TEST) infrastructure/test_test_container infrastructure/test_enhanced_memory_tracker
+
+# Default target
+all: $(ALL_TESTS)
+
+# Help target
+help:
+	@echo "Infrastructure Tests Makefile"
+	@echo "Available targets:"
+	@echo "  all           - Build all infrastructure tests"
+	@echo "  test          - Run all infrastructure tests"
+	@echo "  clean         - Clean build artifacts"
+	@echo "  help          - Show this help"
+
+# Build infrastructure test
+$(INFRA_TEST): infrastructure/test_strongswan_mocks.c $(INFRA_SRCS)
+	@echo "Building infrastructure test: $(INFRA_TEST)"
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(INFRA_SRCS) -o $@ $(LIBS)
+
+# Build test container
+infrastructure/test_test_container: infrastructure/test_test_container.c infrastructure/test_container.c $(INFRA_SRCS)
+	@echo "Building test container test"
+	$(CC) $(CFLAGS) $(INCLUDES) $< infrastructure/test_container.c $(INFRA_SRCS) -o $@ $(LIBS)
+
+# Build enhanced memory tracker test  
+infrastructure/test_enhanced_memory_tracker: infrastructure/test_enhanced_memory_tracker.c $(INFRA_SRCS)
+	@echo "Building enhanced memory tracker test"
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(INFRA_SRCS) -o $@ $(LIBS)
+
+# Test target - runs all tests
+test: $(ALL_TESTS)
+	@echo "=== Running All Infrastructure Tests ==="
+	@echo "Testing strongSwan Mock Infrastructure..."
+	./$(INFRA_TEST)
+	@echo "Testing Test Container..."
+	./infrastructure/test_test_container
+	@echo "Testing Enhanced Memory Tracker..."
+	./infrastructure/test_enhanced_memory_tracker
+	@echo "✅ All infrastructure tests completed!"
+
+# Run infrastructure test
+run-infra-test: $(INFRA_TEST)
+	@echo "=== Running Infrastructure Tests ==="
+	@echo "Testing strongSwan Mock Infrastructure..."
+	./$(INFRA_TEST)
+	@if [ $$? -eq 0 ]; then \
+		echo "✅ Infrastructure tests passed!"; \
+		echo "Mock system is ready for use."; \
+	else \
+		echo "❌ Infrastructure tests failed!"; \
+		exit 1; \
+	fi
+
+# Memory check
+valgrind-infra: $(INFRA_TEST)
+	@echo "=== Running Infrastructure Tests with Valgrind ==="
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(INFRA_TEST)
+
+# Coverage report for infrastructure
+coverage-infra: run-infra-test
+	@echo "=== Generating Infrastructure Coverage Report ==="
+	gcovr -r . --html --html-details -o infrastructure_coverage.html
+	@echo "Coverage report: infrastructure_coverage.html"
+
+# Clean
+clean:
+	rm -f $(INFRA_TEST)
+	rm -f *.gcda *.gcno *.gcov
+	rm -f infrastructure_coverage.html
+
+.PHONY: all test run-infra-test valgrind-infra coverage-infra clean help

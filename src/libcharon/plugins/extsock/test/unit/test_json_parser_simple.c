@@ -1,13 +1,24 @@
 /*
  * Copyright (C) 2024 strongSwan Project
- * Simple JSON Parser Adapter Test
+ * 
+ * Simple Level 2 (Adapter) Tests for JSON Parser functionality
+ * TASK-007: JSON Parser 실제 테스트
+ * 
+ * This is a simplified test that focuses on testing JSON Parser 
+ * adapter functionality with minimal dependencies.
  */
 
 #include <check.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <cjson/cJSON.h>
+
+// Test infrastructure
+#include "../infrastructure/test_container.h"
+#include "../infrastructure/strongswan_mocks.h"
+
+// Mock JSON Parser interface
+#include "extsock_json_parser_mock.h"
 
 /**
  * JSON 기본 구조 파싱 테스트

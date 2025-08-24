@@ -1,0 +1,134 @@
+# Level 2 (Adapter) Tests for extsock_json_parser module  
+# TASK-007: JSON Parser 실제 테스트
+# Level 2: Adapter Tests (with Mock strongSwan dependencies)
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -g -Wall -Wextra -std=c99 -I. -I../infrastructure -I../../common -I../../adapters/json -I../../interfaces
+LDFLAGS = 
+
+# Use pkg-config for dependencies
+CHECK_CFLAGS = $(shell pkg-config --cflags check 2>/dev/null || echo "")
+CHECK_LIBS = $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck")
+CJSON_CFLAGS = $(shell pkg-config --cflags libcjson 2>/dev/null || echo "")
+CJSON_LIBS = $(shell pkg-config --libs libcjson 2>/dev/null || echo "-lcjson")
+
+# Add dependency flags
+CFLAGS += $(CHECK_CFLAGS) $(CJSON_CFLAGS) -DADAPTER_UNIT_TEST
+LDFLAGS += $(CHECK_LIBS) $(CJSON_LIBS) -lm -lpthread
+
+# Source files
+INFRASTRUCTURE_SOURCES = ../infrastructure/test_container.c \
+                        ../infrastructure/strongswan_mocks.c
+
+# Module sources (real implementation under test)
+MODULE_SOURCES = ../../adapters/json/extsock_json_parser.c \
+                ../../common/extsock_common.c
+
+# Test sources
+TEST_SOURCES = test_extsock_json_parser_adapter.c
+
+# Object files
+INFRASTRUCTURE_OBJECTS = $(INFRASTRUCTURE_SOURCES:.c=.o)
+MODULE_OBJECTS = $(MODULE_SOURCES:.c=.o)
+TEST_OBJECTS = $(TEST_SOURCES:.c=.o)
+
+# Test executable
+TEST_EXECUTABLE = test_extsock_json_parser_adapter
+
+# Coverage files
+COVERAGE_FILES = *.gcda *.gcno *.gcov ../../adapters/json/*.gcda ../../adapters/json/*.gcno ../../common/*.gcda ../../common/*.gcno
+
+.PHONY: all test clean coverage memcheck help
+
+# Default target
+all: $(TEST_EXECUTABLE)
+
+# Build test executable
+$(TEST_EXECUTABLE): $(INFRASTRUCTURE_OBJECTS) $(MODULE_OBJECTS) $(TEST_OBJECTS)
+	@echo "Linking extsock_json_parser adapter tests..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "✅ extsock_json_parser adapter tests built successfully"
+
+# Compile source files
+%.o: %.c
+	@echo "Compiling $< (Adapter Level)..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Run tests
+test: $(TEST_EXECUTABLE)
+	@echo "Running extsock_json_parser Adapter Tests (Level 2)..."
+	@echo "====================================================="
+	./$(TEST_EXECUTABLE)
+	@echo "====================================================="
+	@echo "✅ Adapter tests completed"
+
+# Run with valgrind for memory checking
+memcheck: $(TEST_EXECUTABLE)
+	@echo "Running extsock_json_parser adapter tests with Valgrind..."
+	@echo "========================================================"
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./$(TEST_EXECUTABLE)
+	@echo "========================================================"
+
+# Coverage analysis
+coverage: clean
+	@echo "Building with coverage instrumentation..."
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage" test
+	@echo "Running gcov analysis..."
+	gcov $(MODULE_SOURCES) $(TEST_SOURCES)
+	@echo "Coverage analysis complete. Check .gcov files for details."
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning extsock_json_parser adapter test artifacts..."
+	rm -f $(TEST_EXECUTABLE)
+	rm -f *.o
+	rm -f ../infrastructure/*.o
+	rm -f ../../adapters/json/*.o
+	rm -f ../../common/*.o
+	rm -f $(COVERAGE_FILES)
+	@echo "Clean complete"
+
+# Help target
+help:
+	@echo "extsock_json_parser Adapter Tests Makefile"
+	@echo "=========================================="
+	@echo ""
+	@echo "This makefile builds Level 2 (Adapter) tests for extsock_json_parser module."
+	@echo "These tests use the Mock strongSwan system to test adapter functionality."
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all       - Build test executable (default)"
+	@echo "  test      - Build and run adapter tests"
+	@echo "  memcheck  - Run tests with Valgrind memory checking"
+	@echo "  coverage  - Build with coverage and analyze"
+	@echo "  clean     - Remove build artifacts"
+	@echo "  help      - Show this help message"
+	@echo ""
+	@echo "Test Categories:"
+	@echo "  - Parser Creation/Destruction Tests"
+	@echo "  - IKE Configuration Parsing Tests"
+	@echo "  - Authentication Configuration Tests (PSK/PubKey)"
+	@echo "  - Proposals Parsing Tests (IKE/ESP)"
+	@echo "  - Traffic Selectors Parsing Tests"
+	@echo "  - Child Configuration Parsing Tests"
+	@echo "  - Configuration Entity Tests (placeholder)"
+	@echo "  - Error Handling and Edge Cases"
+	@echo "  - Mock Failure Simulation Tests"
+	@echo "  - Memory Stress Tests"
+	@echo ""
+	@echo "Module Under Test:"
+	@echo "  ../../adapters/json/extsock_json_parser.c - JSON parsing adapter"
+	@echo ""
+	@echo "Level: 2 (Adapter) - Uses Mock strongSwan system"
+	@echo ""
+	@echo "Dependencies:"
+	@echo "  - Check framework (unit testing)"
+	@echo "  - cJSON library (JSON parsing)" 
+	@echo "  - Mock strongSwan infrastructure"
+	@echo "  - Test container DI system"
+
+# Dependencies
+$(INFRASTRUCTURE_OBJECTS): ../infrastructure/test_container.h ../infrastructure/strongswan_mocks.h
+$(MODULE_OBJECTS): ../../adapters/json/extsock_json_parser.h ../../common/extsock_types.h ../../common/extsock_common.h
+$(TEST_OBJECTS): ../../adapters/json/extsock_json_parser.h ../infrastructure/test_container.h ../infrastructure/strongswan_mocks.h

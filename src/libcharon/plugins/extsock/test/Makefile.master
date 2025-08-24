@@ -1,0 +1,185 @@
+# Master Test Makefile - 3-Level Build System
+# TASK-003: Build System Separation
+#
+# This master makefile coordinates all three test levels:
+# Level 1: Pure Unit Tests (no strongSwan)
+# Level 2: Adapter Tests (mocked strongSwan) 
+# Level 3: Integration Tests (real strongSwan)
+
+.PHONY: all pure adapter integration test clean coverage memcheck help status
+
+# Default target - build all levels
+all: pure adapter integration
+	@echo ""
+	@echo "🎉 All test levels built successfully!"
+	@echo ""
+	@$(MAKE) -f Makefile.master status
+
+# Build individual levels
+pure:
+	@echo "🔨 Building Pure Unit Tests (Level 1)..."
+	@$(MAKE) -f Makefile.pure all
+	@echo ""
+
+adapter:
+	@echo "🔨 Building Adapter Unit Tests (Level 2)..."  
+	@$(MAKE) -f Makefile.adapter all
+	@echo ""
+
+integration:
+	@echo "🔨 Building Integration Tests (Level 3)..."
+	@$(MAKE) -f Makefile.integration all
+	@echo ""
+
+# Run tests at all levels
+test: test-pure test-adapter test-integration
+	@echo ""
+	@echo "🧪 All test levels completed!"
+	@echo ""
+
+test-pure:
+	@echo "🧪 Running Pure Unit Tests (Level 1)..."
+	@echo "======================================="
+	@$(MAKE) -f Makefile.pure test
+	@echo ""
+
+test-adapter:
+	@echo "🧪 Running Adapter Unit Tests (Level 2)..."
+	@echo "=========================================="
+	@$(MAKE) -f Makefile.adapter test  
+	@echo ""
+
+test-integration:
+	@echo "🧪 Running Integration Tests (Level 3)..."
+	@echo "========================================="
+	@$(MAKE) -f Makefile.integration test
+	@echo ""
+
+# Memory checking at all levels
+memcheck: memcheck-pure memcheck-adapter memcheck-integration
+	@echo ""
+	@echo "🔍 Memory checking completed for all levels!"
+	@echo ""
+
+memcheck-pure:
+	@echo "🔍 Memory checking Pure Unit Tests..."
+	@$(MAKE) -f Makefile.pure memcheck
+
+memcheck-adapter:
+	@echo "🔍 Memory checking Adapter Unit Tests..."
+	@$(MAKE) -f Makefile.adapter memcheck
+
+memcheck-integration:
+	@echo "🔍 Memory checking Integration Tests..."
+	@$(MAKE) -f Makefile.integration memcheck
+
+# Coverage analysis at all levels
+coverage: coverage-pure coverage-adapter coverage-integration
+	@echo ""
+	@echo "📊 Coverage analysis completed for all levels!"
+	@echo ""
+
+coverage-pure:
+	@echo "📊 Coverage analysis for Pure Unit Tests..."
+	@$(MAKE) -f Makefile.pure coverage
+
+coverage-adapter:
+	@echo "📊 Coverage analysis for Adapter Unit Tests..."
+	@$(MAKE) -f Makefile.adapter coverage
+
+coverage-integration:
+	@echo "📊 Coverage analysis for Integration Tests..."
+	@$(MAKE) -f Makefile.integration coverage
+
+# Clean all levels
+clean: clean-pure clean-adapter clean-integration
+	@echo ""
+	@echo "🧹 All test levels cleaned!"
+	@echo ""
+
+clean-pure:
+	@$(MAKE) -f Makefile.pure clean
+
+clean-adapter:
+	@$(MAKE) -f Makefile.adapter clean
+
+clean-integration:
+	@$(MAKE) -f Makefile.integration clean
+
+# Show current status of all test levels
+status:
+	@echo "📊 extsock Plugin 3-Level Test System Status"
+	@echo "============================================="
+	@echo ""
+	@echo "📋 Test Architecture Overview:"
+	@echo "   Level 1: Pure Unit Tests      (Business logic, no dependencies)"
+	@echo "   Level 2: Adapter Unit Tests   (Mocked strongSwan dependencies)"
+	@echo "   Level 3: Integration Tests    (Real strongSwan integration)"
+	@echo ""
+	@echo "📊 Current Implementation Status:"
+	@echo ""
+	@echo "✅ Level 1 - Pure Unit Tests:"
+	@echo "   ✅ Build system ready"
+	@echo "   ✅ Infrastructure available"  
+	@echo "   ⏳ Business logic tests - Phase 2"
+	@echo ""
+	@echo "✅ Level 2 - Adapter Unit Tests:"
+	@echo "   ✅ Build system ready"
+	@echo "   ✅ strongSwan mock system operational"
+	@echo "   ✅ Test container DI system operational"
+	@echo "   ⏳ Adapter tests - Phase 3"
+	@echo ""
+	@echo "✅ Level 3 - Integration Tests:"
+	@echo "   ✅ Build system ready" 
+	@echo "   ✅ Test infrastructure available"
+	@echo "   ⏳ strongSwan integration - Phase 5"
+	@echo ""
+	@echo "🎯 Next Steps:"
+	@echo "   1. Phase 2: Implement Common Layer pure unit tests"
+	@echo "   2. Phase 3: Implement Adapter Layer tests with mocks"
+	@echo "   3. Phase 4: Implement Domain/Usecase Layer tests"
+	@echo "   4. Phase 5: Implement Integration tests with real strongSwan"
+	@echo ""
+	@echo "🏗️  Build System Features:"
+	@echo "   ✅ 3-level separation (Pure/Adapter/Integration)"
+	@echo "   ✅ Independent compilation flags"
+	@echo "   ✅ Proper dependency isolation"
+	@echo "   ✅ Coverage and memory checking support"
+	@echo "   ✅ Progressive complexity (Level 1→2→3)"
+
+# Help target
+help:
+	@echo "extsock Plugin Master Test Makefile"
+	@echo "==================================="
+	@echo ""
+	@echo "This master makefile manages a 3-level test architecture:"
+	@echo ""
+	@echo "🏗️  Build Targets:"
+	@echo "   all          - Build all test levels"
+	@echo "   pure         - Build Level 1 (Pure unit tests)"
+	@echo "   adapter      - Build Level 2 (Adapter tests with mocks)"
+	@echo "   integration  - Build Level 3 (Integration tests)"
+	@echo ""
+	@echo "🧪 Test Targets:"
+	@echo "   test         - Run tests at all levels"
+	@echo "   test-pure    - Run Level 1 tests only" 
+	@echo "   test-adapter - Run Level 2 tests only"
+	@echo "   test-integration - Run Level 3 tests only"
+	@echo ""
+	@echo "🔍 Analysis Targets:"
+	@echo "   memcheck     - Memory check all levels"
+	@echo "   coverage     - Coverage analysis all levels"
+	@echo ""
+	@echo "🧹 Maintenance Targets:"
+	@echo "   clean        - Clean all levels"
+	@echo "   status       - Show detailed status of all levels"
+	@echo "   help         - Show this help message"
+	@echo ""
+	@echo "📚 Individual Level Help:"
+	@echo "   make -f Makefile.pure help"
+	@echo "   make -f Makefile.adapter help"
+	@echo "   make -f Makefile.integration help"
+	@echo ""
+	@echo "🎯 Test Level Progression:"
+	@echo "   Level 1 → Level 2 → Level 3 (increasing complexity)"
+	@echo "   Each level builds upon previous level's foundations"

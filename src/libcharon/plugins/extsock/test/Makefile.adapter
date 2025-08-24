@@ -1,0 +1,159 @@
+# Adapter Unit Tests Makefile (Level 2)
+# TASK-003: Build System Separation
+#
+# Adapter unit tests that use mocked strongSwan dependencies.
+# These test adapter layer components with controlled strongSwan behavior.
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -g -Wall -Wextra -std=c99 -I. -Icommon -Iinfrastructure -I../adapters -I../domain -I../usecases
+LDFLAGS = 
+
+# Use pkg-config for dependencies
+CHECK_CFLAGS = $(shell pkg-config --cflags check 2>/dev/null || echo "")
+CHECK_LIBS = $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck")
+# Add dependency flags (no cJSON needed for mock version)
+CFLAGS += $(CHECK_CFLAGS) -DADAPTER_UNIT_TEST
+LDFLAGS += $(CHECK_LIBS) -lm -lpthread
+
+# Infrastructure sources (includes strongSwan mocks)
+INFRASTRUCTURE_SOURCES = infrastructure/test_container.c \
+                        infrastructure/strongswan_mocks.c
+
+# Adapter test sources (Phase 3 implementation)
+ADAPTER_TEST_SOURCES = unit/test_json_parser_simple_new.c \
+                      unit/test_socket_adapter_simple_new.c \
+                      unit/test_extsock_strongswan_adapter.c
+
+# Module sources under test (using mock version for Level 2)
+MODULE_SOURCES = unit/extsock_json_parser_mock.c \
+                unit/extsock_socket_adapter_mock.c \
+                unit/extsock_strongswan_adapter_mock.c
+
+# Test executables
+ADAPTER_TEST_EXECUTABLES = unit/test_json_parser_simple_new \
+                          unit/test_socket_adapter_simple_new \
+                          unit/test_extsock_strongswan_adapter 
+
+# Object files
+INFRASTRUCTURE_OBJECTS = $(INFRASTRUCTURE_SOURCES:.c=.o)
+MODULE_OBJECTS = $(MODULE_SOURCES:.c=.o) 
+ADAPTER_TEST_OBJECTS = $(ADAPTER_TEST_SOURCES:.c=.o)
+
+# Coverage files
+COVERAGE_FILES = */*.gcda */*.gcno */*.gcov
+
+.PHONY: all test clean coverage memcheck help infrastructure
+
+# Default target
+all: infrastructure $(ADAPTER_TEST_EXECUTABLES)
+	@echo "✅ Adapter unit tests built successfully"
+	@echo "   📊 Built $(words $(ADAPTER_TEST_EXECUTABLES)) test executables"
+	@echo "   📋 Adapter modules: JSON Parser, Socket Adapter, strongSwan Adapter"
+
+# Build infrastructure with strongSwan mocks
+infrastructure: $(INFRASTRUCTURE_OBJECTS)
+	@echo "✅ Adapter test infrastructure compiled"
+	@echo "   • strongSwan mocks initialized"
+	@echo "   • Test container DI system ready"
+	@echo "   • Adapter test fixtures available"
+
+# Compile source files
+%.o: %.c
+	@echo "Compiling $< (Adapter Level)..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Test target - run all adapter unit tests
+test: $(ADAPTER_TEST_EXECUTABLES)
+	@echo "Running Adapter Unit Tests (Level 2)..."
+	@echo "==========================================="
+	@echo "📋 Adapter Unit Test Level Status:"
+	@echo "   ✅ Infrastructure ready"
+	@echo "   ✅ strongSwan mocks operational"
+	@echo "   ✅ Test container DI system operational" 
+	@echo "   ✅ JSON Parser adapter tests implemented"
+	@echo "   ✅ Socket adapter tests implemented"
+	@echo "   ✅ strongSwan adapter tests implemented"
+	@echo "==========================================="
+	@for test in $(ADAPTER_TEST_EXECUTABLES); do \
+		echo "🧪 Running $$test..."; \
+		./$$test || exit 1; \
+		echo ""; \
+	done
+	@echo "==========================================="
+	@echo "✅ All Adapter Unit Tests completed successfully!"
+
+# Memory check with valgrind
+memcheck: $(ADAPTER_TEST_EXECUTABLES)
+	@echo "Running Adapter Unit Tests with Valgrind..."
+	@for test in $(ADAPTER_TEST_EXECUTABLES); do \
+		echo "🔍 Memory checking $$test..."; \
+		valgrind --tool=memcheck --leak-check=full --error-exitcode=1 ./$$test || exit 1; \
+	done
+	@echo "✅ All memory checks passed"
+
+# Coverage analysis
+coverage: clean
+	@echo "Building adapter unit tests with coverage..."
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage" test
+	@echo "Running gcov analysis..."
+	gcov $(MODULE_SOURCES) || true
+	@echo "Coverage analysis complete. Check .gcov files for details."
+
+# Build individual test executables
+unit/test_json_parser_simple_new: $(INFRASTRUCTURE_OBJECTS) $(MODULE_OBJECTS) unit/test_json_parser_simple_new.o
+	@echo "Building JSON Parser simple adapter unit test..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+unit/test_socket_adapter_simple_new: $(INFRASTRUCTURE_OBJECTS) $(MODULE_OBJECTS) unit/test_socket_adapter_simple_new.o
+	@echo "Building Socket Adapter simple adapter unit test..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+unit/test_extsock_strongswan_adapter: $(INFRASTRUCTURE_OBJECTS) $(MODULE_OBJECTS) unit/test_extsock_strongswan_adapter.o
+	@echo "Building strongSwan Adapter Level 2 unit test..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning Adapter unit test artifacts..."
+	rm -f $(ADAPTER_TEST_EXECUTABLES)
+	rm -f */*.o
+	rm -f ../*/*.o
+	rm -f $(COVERAGE_FILES)
+	@echo "Adapter unit test clean complete"
+
+# Help target
+help:
+	@echo "Adapter Unit Tests Makefile (Level 2)"
+	@echo "====================================="
+	@echo ""
+	@echo "This build level is for adapter unit tests that use MOCKED strongSwan."
+	@echo "Tests at this level verify adapter layer components with controlled behavior."
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all           - Build infrastructure and adapter tests"
+	@echo "  infrastructure - Build adapter test infrastructure"
+	@echo "  test          - Run adapter unit tests"
+	@echo "  memcheck      - Run tests with Valgrind (when available)"
+	@echo "  coverage      - Build with coverage and analyze (when available)"
+	@echo "  clean         - Remove build artifacts"
+	@echo "  help          - Show this help message"
+	@echo ""
+	@echo "Test Categories (Phase 3):"
+	@echo "  - JSON Parser Adapter Tests (config parsing, error handling)"
+	@echo "  - Socket Adapter Tests (event sending, socket listening)"
+	@echo "  - strongSwan Adapter Tests (IKE/IPsec API mocking)"
+	@echo ""
+	@echo "Mock Components Available:"
+	@echo "  ✅ ike_cfg_t, peer_cfg_t, child_cfg_t"
+	@echo "  ✅ linked_list_t, enumerator_t"  
+	@echo "  ✅ State tracking and verification"
+	@echo "  ✅ Parameter capture system"
+	@echo "  ✅ Failure simulation"
+	@echo ""
+	@echo "Current Status: ✅ JSON Parser + Socket Adapter + strongSwan Adapter ready"
+
+# Dependencies
+$(INFRASTRUCTURE_OBJECTS): infrastructure/test_container.h infrastructure/strongswan_mocks.h
+$(MODULE_OBJECTS): unit/extsock_json_parser_mock.h unit/extsock_socket_adapter_mock.h unit/extsock_strongswan_adapter_mock.h ../common/extsock_types.h ../common/extsock_common.h
+$(ADAPTER_TEST_OBJECTS): unit/extsock_json_parser_mock.h unit/extsock_socket_adapter_mock.h unit/extsock_strongswan_adapter_mock.h infrastructure/test_container.h infrastructure/strongswan_mocks.h

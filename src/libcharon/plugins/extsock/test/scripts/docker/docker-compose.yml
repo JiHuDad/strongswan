@@ -1,0 +1,76 @@
+# Docker Compose for extsock Plugin Testing
+# TASK-016: CI/CD Pipeline Docker Support
+
+version: '3.8'
+
+services:
+  # Main test environment
+  extsock-test:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile
+    container_name: extsock-test-main
+    volumes:
+      - ../../:/workspace
+      - test-logs:/workspace/logs
+    environment:
+      - TEST_ENVIRONMENT=docker-compose
+      - BUILD_TYPE=Release
+      - PARALLEL_JOBS=4
+    working_dir: /workspace
+    command: ["scripts/run_full_test_suite.sh"]
+    
+  # Debug environment with interactive shell
+  extsock-debug:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile
+    container_name: extsock-test-debug
+    volumes:
+      - ../../:/workspace
+      - test-logs:/workspace/logs
+    environment:
+      - TEST_ENVIRONMENT=docker-debug
+      - BUILD_TYPE=Debug
+    working_dir: /workspace
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+    
+  # Performance testing environment
+  extsock-performance:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile
+    container_name: extsock-test-perf
+    volumes:
+      - ../../:/workspace
+      - test-logs:/workspace/logs
+    environment:
+      - TEST_ENVIRONMENT=docker-performance
+      - BUILD_TYPE=Release
+    working_dir: /workspace
+    command: ["scripts/run_performance_tests.sh"]
+    
+  # Memory testing with Valgrind
+  extsock-memory:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile
+    container_name: extsock-test-memory
+    volumes:
+      - ../../:/workspace
+      - test-logs:/workspace/logs
+    environment:
+      - TEST_ENVIRONMENT=docker-memory
+      - BUILD_TYPE=Debug
+    working_dir: /workspace
+    command: ["scripts/run_memory_tests.sh"]
+    
+volumes:
+  test-logs:
+    driver: local
+
+networks:
+  default:
+    name: extsock-test-network

@@ -1,0 +1,136 @@
+# Pure Unit Tests Makefile (Level 1)
+# TASK-003: Build System Separation
+# 
+# Pure unit tests that do not depend on strongSwan at all.
+# These test business logic, data structures, and utility functions.
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -g -Wall -Wextra -std=c99 -I. -Icommon -Iinfrastructure
+LDFLAGS = 
+
+# Use pkg-config for Check framework if available
+CHECK_CFLAGS = $(shell pkg-config --cflags check 2>/dev/null || echo "")
+CHECK_LIBS = $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck")
+
+# Add Check flags
+CFLAGS += $(CHECK_CFLAGS)
+LDFLAGS += $(CHECK_LIBS) -lm -lpthread
+
+# Common infrastructure sources (no strongSwan dependencies)
+INFRASTRUCTURE_SOURCES = infrastructure/test_container.c \
+                        infrastructure/strongswan_mocks.c
+
+# Pure unit test sources (Phase 2 implementation)
+PURE_TEST_SOURCES = unit/test_extsock_errors_pure.c \
+                   unit/test_extsock_types_pure.c
+
+# Pure unit test module sources  
+PURE_MODULE_SOURCES = unit/extsock_errors_pure.c
+
+# All pure test executables
+PURE_TEST_EXECUTABLES = unit/test_extsock_errors_pure \
+                       unit/test_extsock_types_pure 
+
+# Object files
+INFRASTRUCTURE_OBJECTS = $(INFRASTRUCTURE_SOURCES:.c=.o)
+PURE_TEST_OBJECTS = $(PURE_TEST_SOURCES:.c=.o)
+PURE_MODULE_OBJECTS = $(PURE_MODULE_SOURCES:.c=.o)
+
+# Coverage files
+COVERAGE_FILES = */*.gcda */*.gcno */*.gcov
+
+.PHONY: all test clean coverage memcheck help
+
+# Default target
+all: infrastructure $(PURE_TEST_EXECUTABLES)
+	@echo "✅ Pure unit tests built successfully"
+	@echo "   📊 Built $(words $(PURE_TEST_EXECUTABLES)) test executables"
+	@echo "   📋 Common Layer modules: extsock_errors, extsock_types"
+
+# Build infrastructure components
+infrastructure: $(INFRASTRUCTURE_OBJECTS)
+	@echo "✅ Pure test infrastructure compiled"
+
+# Compile source files
+%.o: %.c
+	@echo "Compiling $< (Pure Level)..."
+	$(CC) $(CFLAGS) -DPURE_UNIT_TEST -c $< -o $@
+
+# Test target - run all pure unit tests
+test: $(PURE_TEST_EXECUTABLES)
+	@echo "Running Pure Unit Tests (Level 1)..."
+	@echo "==========================================="
+	@echo "📋 Pure Unit Test Level Status:"
+	@echo "   ✅ Infrastructure ready"
+	@echo "   ✅ Common Layer tests implemented"
+	@echo "   📊 Running $(words $(PURE_TEST_EXECUTABLES)) test suites"
+	@echo "==========================================="
+	@for test in $(PURE_TEST_EXECUTABLES); do \
+		echo "🧪 Running $$test..."; \
+		./$$test || exit 1; \
+		echo ""; \
+	done
+	@echo "==========================================="
+	@echo "✅ All Pure Unit Tests completed successfully!"
+
+# Build individual test executables
+unit/test_extsock_errors_pure: $(PURE_MODULE_OBJECTS) unit/test_extsock_errors_pure.o
+	@echo "Building extsock_errors pure unit test..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+unit/test_extsock_types_pure: unit/test_extsock_types_pure.o
+	@echo "Building extsock_types pure unit test..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+# Memory check with valgrind
+memcheck: $(PURE_TEST_EXECUTABLES)
+	@echo "Running Pure Unit Tests with Valgrind..."
+	@for test in $(PURE_TEST_EXECUTABLES); do \
+		echo "🔍 Memory checking $$test..."; \
+		valgrind --tool=memcheck --leak-check=full --error-exitcode=1 ./$$test || exit 1; \
+	done
+	@echo "✅ All memory checks passed"
+
+# Coverage analysis
+coverage: clean
+	@echo "Building pure unit tests with coverage..."
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage" test
+	@echo "Running gcov analysis..."
+	gcov $(PURE_MODULE_SOURCES) || true
+	@echo "Coverage analysis complete. Check .gcov files for details."
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning Pure unit test artifacts..."
+	rm -f $(PURE_TEST_EXECUTABLES)
+	rm -f */*.o
+	rm -f $(COVERAGE_FILES)
+	@echo "Pure unit test clean complete"
+
+# Help target
+help:
+	@echo "Pure Unit Tests Makefile (Level 1)"
+	@echo "=================================="
+	@echo ""
+	@echo "This build level is for pure unit tests that do NOT depend on strongSwan."
+	@echo "Tests at this level focus on business logic, data structures, and utilities."
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all         - Build infrastructure and pure tests"
+	@echo "  infrastructure - Build test infrastructure only" 
+	@echo "  test        - Run pure unit tests"
+	@echo "  memcheck    - Run tests with Valgrind (when available)"
+	@echo "  coverage    - Build with coverage and analyze (when available)"
+	@echo "  clean       - Remove build artifacts"
+	@echo "  help        - Show this help message"
+	@echo ""
+	@echo "Test Categories (Phase 2):"
+	@echo "  - Business Logic Tests (domain entities, use cases)"
+	@echo "  - Data Structure Tests (configuration parsing, validation)"  
+	@echo "  - Utility Function Tests (string handling, error management)"
+	@echo ""
+	@echo "Current Status: ✅ Infrastructure ready, ⏳ Waiting for Phase 2"
+
+# Dependencies
+$(INFRASTRUCTURE_OBJECTS): infrastructure/test_container.h infrastructure/strongswan_mocks.h

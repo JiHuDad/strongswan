@@ -1,0 +1,111 @@
+# Makefile for strongSwan Adapter Level 2 Tests
+# TASK-009: strongSwan Adapter 실제 테스트
+# Part of the 3-level testing infrastructure
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fPIC
+DEBUG_FLAGS = -g -DDEBUG
+INCLUDES = -I../../common -I../../interfaces -I../../adapters/strongswan -I../infrastructure
+LDFLAGS = 
+LIBS = 
+
+# Test executable
+TEST_TARGET = test_extsock_strongswan_adapter
+MOCK_TARGET = extsock_strongswan_adapter_mock
+
+# Source files
+TEST_SOURCES = test_extsock_strongswan_adapter.c
+MOCK_SOURCES = extsock_strongswan_adapter_mock.c
+INFRASTRUCTURE_SOURCES = ../infrastructure/strongswan_mocks.c \
+                        ../infrastructure/advanced_memory_tracker.c \
+                        ../infrastructure/test_container.c
+COMMON_SOURCES = ../../common/extsock_errors.c
+
+# Object files
+TEST_OBJECTS = $(TEST_SOURCES:.c=.o)
+MOCK_OBJECTS = $(MOCK_SOURCES:.c=.o)
+INFRASTRUCTURE_OBJECTS = $(INFRASTRUCTURE_SOURCES:.c=.o)
+COMMON_OBJECTS = $(COMMON_SOURCES:.c=.o)
+
+# All objects
+ALL_OBJECTS = $(TEST_OBJECTS) $(MOCK_OBJECTS) $(INFRASTRUCTURE_OBJECTS) $(COMMON_OBJECTS)
+
+# Default target
+all: $(TEST_TARGET)
+
+# Test executable
+$(TEST_TARGET): $(ALL_OBJECTS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+# Test source compilation
+%.o: %.c
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $(INCLUDES) -c $< -o $@
+
+# Infrastructure objects (relative path handling)
+../infrastructure/%.o: ../infrastructure/%.c
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $(INCLUDES) -c $< -o $@
+
+# Common objects (relative path handling)
+../../common/%.o: ../../common/%.c
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $(INCLUDES) -c $< -o $@
+
+# Run tests
+test: $(TEST_TARGET)
+	@echo "Running strongSwan Adapter Level 2 Tests..."
+	@./$(TEST_TARGET)
+
+# Run with valgrind
+test-valgrind: $(TEST_TARGET)
+	@echo "Running strongSwan Adapter Level 2 Tests with Valgrind..."
+	@valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes \
+		--error-exitcode=1 ./$(TEST_TARGET)
+
+# Run with coverage
+test-coverage: CFLAGS += --coverage
+test-coverage: LDFLAGS += --coverage
+test-coverage: $(TEST_TARGET)
+	@echo "Running strongSwan Adapter Level 2 Tests with Coverage..."
+	@./$(TEST_TARGET)
+	@gcov $(TEST_SOURCES) $(MOCK_SOURCES)
+
+# Debug build
+debug: CFLAGS += -DDEBUG_VERBOSE
+debug: $(TEST_TARGET)
+
+# Clean
+clean:
+	rm -f $(ALL_OBJECTS) $(TEST_TARGET)
+	rm -f *.gcda *.gcno *.gcov
+	rm -f ../infrastructure/*.o ../../common/*.o
+
+# Very clean
+distclean: clean
+	rm -f core vgcore.*
+
+# Help
+help:
+	@echo "Available targets:"
+	@echo "  all          - Build test executable (default)"
+	@echo "  test         - Run tests"
+	@echo "  test-valgrind - Run tests with Valgrind"
+	@echo "  test-coverage - Run tests with coverage"
+	@echo "  debug        - Build with debug verbose output"
+	@echo "  clean        - Remove build artifacts"
+	@echo "  distclean    - Remove all generated files"
+	@echo "  help         - Show this help"
+
+# Check if required files exist
+check-deps:
+	@echo "Checking dependencies..."
+	@test -f "$(TEST_SOURCES)" || (echo "Error: $(TEST_SOURCES) not found"; exit 1)
+	@test -f "$(MOCK_SOURCES)" || (echo "Error: $(MOCK_SOURCES) not found"; exit 1)
+	@test -f "../infrastructure/strongswan_mocks.c" || (echo "Error: Infrastructure not found"; exit 1)
+	@test -f "../../common/extsock_errors.c" || (echo "Error: Common sources not found"; exit 1)
+	@echo "All dependencies found."
+
+# Install (for Level 2 integration)
+install: $(TEST_TARGET)
+	@echo "strongSwan Adapter Level 2 test built successfully"
+
+.PHONY: all test test-valgrind test-coverage debug clean distclean help check-deps install

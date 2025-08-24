@@ -1,0 +1,103 @@
+# Test Container DI System Tests Makefile
+# Part of TASK-002: Test Container DI System
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -g -Wall -Wextra -std=c99 -I. -I../common
+LDFLAGS = 
+
+# Use pkg-config for Check framework if available
+CHECK_CFLAGS = $(shell pkg-config --cflags check 2>/dev/null || echo "")
+CHECK_LIBS = $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck")
+
+# Add Check flags
+CFLAGS += $(CHECK_CFLAGS)
+LDFLAGS += $(CHECK_LIBS) -lm -lpthread
+
+# Source files
+MOCK_SOURCES = strongswan_mocks.c
+CONTAINER_SOURCES = test_container.c
+TEST_SOURCES = test_test_container.c
+
+# Object files
+MOCK_OBJECTS = $(MOCK_SOURCES:.c=.o)
+CONTAINER_OBJECTS = $(CONTAINER_SOURCES:.c=.o)
+TEST_OBJECTS = $(TEST_SOURCES:.c=.o)
+
+# Test executable
+TEST_EXECUTABLE = test_test_container
+
+# Coverage files (for gcov)
+COVERAGE_FILES = *.gcda *.gcno *.gcov
+
+.PHONY: all test clean coverage help
+
+# Default target
+all: $(TEST_EXECUTABLE)
+
+# Build test executable
+$(TEST_EXECUTABLE): $(MOCK_OBJECTS) $(CONTAINER_OBJECTS) $(TEST_OBJECTS)
+	@echo "Linking Test Container DI System tests..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "✅ Test Container DI System tests built successfully"
+
+# Compile source files
+%.o: %.c
+	@echo "Compiling $<..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Run tests
+test: $(TEST_EXECUTABLE)
+	@echo "Running Test Container DI System tests..."
+	@echo "================================================"
+	./$(TEST_EXECUTABLE)
+	@echo "================================================"
+
+# Run with valgrind for memory checking
+memcheck: $(TEST_EXECUTABLE)
+	@echo "Running Test Container DI System tests with Valgrind..."
+	@echo "================================================"
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./$(TEST_EXECUTABLE)
+	@echo "================================================"
+
+# Coverage analysis
+coverage: clean
+	@echo "Building with coverage instrumentation..."
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage" test
+	@echo "Running gcov analysis..."
+	gcov $(CONTAINER_SOURCES) $(MOCK_SOURCES)
+	@echo "Coverage analysis complete. Check .gcov files for details."
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning Test Container DI System test artifacts..."
+	rm -f $(TEST_EXECUTABLE)
+	rm -f *.o
+	rm -f $(COVERAGE_FILES)
+	@echo "Clean complete"
+
+# Help target
+help:
+	@echo "Test Container DI System Tests Makefile"
+	@echo "======================================="
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all       - Build test executable (default)"
+	@echo "  test      - Build and run tests"
+	@echo "  memcheck  - Run tests with Valgrind memory checking"
+	@echo "  coverage  - Build with coverage and analyze"
+	@echo "  clean     - Remove build artifacts"
+	@echo "  help      - Show this help message"
+	@echo ""
+	@echo "Test Components:"
+	@echo "  - Test Data Factory (JSON configs, mock objects)"
+	@echo "  - Memory Tracker (leak detection, statistics)"
+	@echo "  - Test Container (DI system, component management)"
+	@echo "  - Pre-configured Containers (Pure/Adapter/Integration)"
+	@echo "  - Test Fixture Helpers (setup/teardown macros)"
+	@echo "  - Integration Scenarios (complex workflows)"
+
+# Dependencies
+$(MOCK_OBJECTS): strongswan_mocks.h
+$(CONTAINER_OBJECTS): test_container.h strongswan_mocks.h
+$(TEST_OBJECTS): test_container.h strongswan_mocks.h

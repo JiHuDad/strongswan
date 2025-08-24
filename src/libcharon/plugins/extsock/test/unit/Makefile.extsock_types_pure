@@ -1,0 +1,106 @@
+# Pure Unit Tests for extsock_types module  
+# TASK-006: extsock_types 실제 테스트
+# Level 1: Pure Unit Tests (no strongSwan dependencies)
+
+# Compiler and flags
+CC = gcc
+CFLAGS = -g -Wall -Wextra -std=c99 -I. -I../infrastructure -I../../common
+LDFLAGS = 
+
+# Use pkg-config for Check framework if available
+CHECK_CFLAGS = $(shell pkg-config --cflags check 2>/dev/null || echo "")
+CHECK_LIBS = $(shell pkg-config --libs check 2>/dev/null || echo "-lcheck")
+
+# Add Check flags and define pure unit test
+CFLAGS += $(CHECK_CFLAGS) -DPURE_UNIT_TEST
+LDFLAGS += $(CHECK_LIBS) -lm -lpthread
+
+# Source files (only test file, no module source needed for type tests)
+TEST_SOURCES = test_extsock_types_pure.c
+
+# Object files
+TEST_OBJECTS = $(TEST_SOURCES:.c=.o)
+
+# Test executable
+TEST_EXECUTABLE = test_extsock_types_pure
+
+# Coverage files
+COVERAGE_FILES = *.gcda *.gcno *.gcov
+
+.PHONY: all test clean coverage memcheck help
+
+# Default target
+all: $(TEST_EXECUTABLE)
+
+# Build test executable
+$(TEST_EXECUTABLE): $(TEST_OBJECTS)
+	@echo "Linking extsock_types pure unit tests..."
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "✅ extsock_types pure unit tests built successfully"
+
+# Compile source files
+%.o: %.c
+	@echo "Compiling $< (Pure Level)..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Run tests
+test: $(TEST_EXECUTABLE)
+	@echo "Running extsock_types Pure Unit Tests (Level 1)..."
+	@echo "================================================="
+	./$(TEST_EXECUTABLE)
+	@echo "================================================="
+	@echo "✅ Pure unit tests completed"
+
+# Run with valgrind for memory checking
+memcheck: $(TEST_EXECUTABLE)
+	@echo "Running extsock_types tests with Valgrind..."
+	@echo "============================================"
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./$(TEST_EXECUTABLE)
+	@echo "============================================"
+
+# Coverage analysis
+coverage: clean
+	@echo "Building with coverage instrumentation..."
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage" test
+	@echo "Running gcov analysis..."
+	gcov $(TEST_SOURCES)
+	@echo "Coverage analysis complete. Check .gcov files for details."
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning extsock_types pure unit test artifacts..."
+	rm -f $(TEST_EXECUTABLE)
+	rm -f *.o
+	rm -f $(COVERAGE_FILES)
+	@echo "Clean complete"
+
+# Help target
+help:
+	@echo "extsock_types Pure Unit Tests Makefile"
+	@echo "======================================"
+	@echo ""
+	@echo "This makefile builds Level 1 (Pure) unit tests for extsock_types module."
+	@echo "These tests focus on type definitions, enums, and structures."
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all       - Build test executable (default)"
+	@echo "  test      - Build and run pure unit tests"
+	@echo "  memcheck  - Run tests with Valgrind memory checking"
+	@echo "  coverage  - Build with coverage and analyze"
+	@echo "  clean     - Remove build artifacts"
+	@echo "  help      - Show this help message"
+	@echo ""
+	@echo "Test Categories:"
+	@echo "  - Error Code Enum Tests (values, uniqueness, range)"
+	@echo "  - Error Severity Enum Tests (ordering, values)"
+	@echo "  - Error Info Structure Tests (size, fields)"
+	@echo "  - Type Compatibility Tests (arithmetic, casting)"
+	@echo "  - Constants and Boundaries Tests (properties)"
+	@echo ""
+	@echo "Module Under Test:"
+	@echo "  extsock_types_pure.h - Type definitions and enumerations"
+	@echo ""
+	@echo "Level: 1 (Pure) - No external dependencies, type validation only"
+
+# Dependencies
+$(TEST_OBJECTS): extsock_types_pure.h
