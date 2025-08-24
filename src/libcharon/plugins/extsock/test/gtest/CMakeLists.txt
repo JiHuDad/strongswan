@@ -17,7 +17,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -g -O0")
 include(FetchContent)
 FetchContent_Declare(
   googletest
-  URL https://github.com/google/googletest/archive/03597a01ee50b6d95c7ee0c67a0a434b84dd0cfe.zip
+  URL https://github.com/google/googletest/archive/v1.14.0.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP true
 )
 
 # Google Test를 시스템 라이브러리로 처리하여 경고 억제
@@ -42,11 +43,14 @@ set(EXTSOCK_SOURCES
 
 # 테스트 인프라 라이브러리
 add_library(extsock_test_infrastructure
-    # Mock 클래스들 (향후 추가)
-    # infrastructure/mocks/MockStrongSwan.cpp
+    # Mock 클래스들
+    infrastructure/mocks/MockStrongSwan.cpp
+    infrastructure/mocks/MockJsonParser.cpp
+    infrastructure/mocks/MockSocketAdapter.cpp
     
-    # Fixture 클래스들 (향후 추가)  
-    # infrastructure/fixtures/ExtsockTestBase.cpp
+    # Fixture 클래스들
+    infrastructure/fixtures/ExtsockTestBase.cpp
+    infrastructure/fixtures/IntegrationTestFixture.cpp
     
     # 유틸리티 클래스들 (향후 추가)
     # infrastructure/utils/TestDataFactory.cpp
@@ -65,6 +69,17 @@ add_executable(hello_gtest_test
 
 target_link_libraries(hello_gtest_test
     gtest_main
+    extsock_test_infrastructure
+)
+
+# Mock Integration 테스트 (Mock 인프라 검증용)
+add_executable(mock_integration_test
+    infrastructure/mock_integration_test.cpp
+)
+
+target_link_libraries(mock_integration_test
+    gtest_main
+    gmock_main
     extsock_test_infrastructure
 )
 
@@ -124,6 +139,7 @@ enable_testing()
 
 # 테스트 등록
 add_test(NAME hello_gtest_test COMMAND hello_gtest_test)
+add_test(NAME mock_integration_test COMMAND mock_integration_test)
 # add_test(NAME unit_tests COMMAND unit_tests)
 # add_test(NAME integration_tests COMMAND integration_tests)
 

@@ -1,0 +1,76 @@
+=======================================================
+🧪 extsock Plugin Google Test Suite
+=======================================================
+시작 시간: #오후
+작업 디렉토리: /Users/kaeulkim/dev/plugin/strongswan/src/libcharon/plugins/extsock/test/gtest
+로그 파일: gtest_suite_20250824_212845.log
+
+[0;36m🔍 의존성 확인[0m
+✅ 의존성 확인 완료
+
+[0;34m🔨 빌드 시스템: makefile[0m
+빠른 검증 모드: Hello World 테스트만 실행
+[0;34m=== Hello World 테스트 실행 ===[0m
+=== Hello Google Test 실행 ===
+./infrastructure/hello_gtest_test.test
+Running main() from /private/tmp/googletest-20250808-4780-aa0gxy/googletest-1.17.0/googletest/src/gtest_main.cc
+[==========] Running 13 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from HelloGoogleTest
+[ RUN      ] HelloGoogleTest.BasicAssertions
+[       OK ] HelloGoogleTest.BasicAssertions (0 ms)
+[ RUN      ] HelloGoogleTest.CLanguageCompatibility
+[       OK ] HelloGoogleTest.CLanguageCompatibility (0 ms)
+[ RUN      ] HelloGoogleTest.GoogleMockBasics
+[       OK ] HelloGoogleTest.GoogleMockBasics (0 ms)
+[ DISABLED ] HelloGoogleTest.DISABLED_FailureExample
+[ RUN      ] HelloGoogleTest.DeathTest
+[       OK ] HelloGoogleTest.DeathTest (0 ms)
+[ RUN      ] HelloGoogleTest.SimplePerformanceTest
+[       OK ] HelloGoogleTest.SimplePerformanceTest (0 ms)
+[ RUN      ] HelloGoogleTest.MemoryTest
+[       OK ] HelloGoogleTest.MemoryTest (0 ms)
+[ RUN      ] HelloGoogleTest.ErrorHandlingTest
+[       OK ] HelloGoogleTest.ErrorHandlingTest (0 ms)
+[----------] 7 tests from HelloGoogleTest (0 ms total)
+
+[----------] 1 test from HelloGoogleTestFixture
+[ RUN      ] HelloGoogleTestFixture.UseFixtureData
+[       OK ] HelloGoogleTestFixture.UseFixtureData (0 ms)
+[----------] 1 test from HelloGoogleTestFixture (0 ms total)
+
+[----------] 5 tests from AdditionTests/ParameterizedTestExample
+[ RUN      ] AdditionTests/ParameterizedTestExample.AdditionTest/0
+[       OK ] AdditionTests/ParameterizedTestExample.AdditionTest/0 (0 ms)
+[ RUN      ] AdditionTests/ParameterizedTestExample.AdditionTest/1
+[       OK ] AdditionTests/ParameterizedTestExample.AdditionTest/1 (0 ms)
+[ RUN      ] AdditionTests/ParameterizedTestExample.AdditionTest/2
+[       OK ] AdditionTests/ParameterizedTestExample.AdditionTest/2 (0 ms)
+[ RUN      ] AdditionTests/ParameterizedTestExample.AdditionTest/3
+[       OK ] AdditionTests/ParameterizedTestExample.AdditionTest/3 (0 ms)
+[ RUN      ] AdditionTests/ParameterizedTestExample.AdditionTest/4
+[       OK ] AdditionTests/ParameterizedTestExample.AdditionTest/4 (0 ms)
+[----------] 5 tests from AdditionTests/ParameterizedTestExample (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 13 tests from 3 test suites ran. (0 ms total)
+[  PASSED  ] 13 tests.
+
+  YOU HAVE 1 DISABLED TEST
+
+✅ Hello Google Test 실행 완료
+[0;32m✅ Hello Google Test 성공[0m
+
+=======================================================
+🎯 Google Test Suite 실행 완료
+=======================================================
+실행 결과:
+  총 테스트 그룹: 1
+  [0;32m✅ 성공: 1[0m
+  [0;31m❌ 실패: 0[0m
+  [1;33m🔧 빌드 오류: 0[0m
+  성공률: 100%
+
+종료 시간: #오후
+로그 위치: gtest_suite_20250824_212845.log
+[0;32m🎉 테스트 스위트 성공[0m
