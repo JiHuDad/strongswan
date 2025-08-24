@@ -1,0 +1,246 @@
+# Google Test 기반 빌드 시스템
+# Makefile for extsock Plugin Google Test Migration
+
+# 컴파일러 및 플래그 설정
+CXX = g++
+CC = gcc
+CXXFLAGS = -std=c++17 -Wall -Wextra -g -O0 -fPIC
+CFLAGS = -std=c99 -Wall -Wextra -g -O0 -fPIC
+
+# Google Test/Mock 라이브러리 설정
+# 시스템에 설치된 Google Test 사용
+GTEST_CFLAGS = `pkg-config --cflags gtest gmock 2>/dev/null || echo "-I/usr/include/gtest -I/usr/include/gmock"`
+GTEST_LIBS = `pkg-config --libs gtest gmock gtest_main gmock_main 2>/dev/null || echo "-lgtest -lgmock -lgtest_main -lgmock_main"`
+
+# 추가 라이브러리
+LIBS = $(GTEST_LIBS) -lpthread -lm
+
+# 인클루드 디렉토리
+INCLUDES = -I. -I.. -I../.. -I../../.. -I../../../.. $(GTEST_CFLAGS)
+
+# 소스 파일 디렉토리
+INFRA_DIR = infrastructure
+UNIT_DIR = unit
+INTEGRATION_DIR = integration
+PERFORMANCE_DIR = performance
+
+# 현재 구현된 테스트 파일들
+HELLO_TEST = $(INFRA_DIR)/hello_gtest_test.cpp
+
+# 향후 추가될 테스트 파일들 (주석 처리)
+# UNIT_TESTS = $(UNIT_DIR)/common/ExtsockErrorsTest.cpp \
+#              $(UNIT_DIR)/common/ExtsockTypesTest.cpp \
+#              $(UNIT_DIR)/adapters/JsonParserTest.cpp \
+#              $(UNIT_DIR)/adapters/SocketAdapterTest.cpp \
+#              $(UNIT_DIR)/adapters/StrongswanAdapterTest.cpp \
+#              $(UNIT_DIR)/domain/ConfigEntityTest.cpp \
+#              $(UNIT_DIR)/domain/ConfigUsecaseTest.cpp
+
+# INTEGRATION_TESTS = $(INTEGRATION_DIR)/WorkflowIntegrationTest.cpp \
+#                     $(INTEGRATION_DIR)/PluginLifecycleTest.cpp \
+#                     $(INTEGRATION_DIR)/FailoverIntegrationTest.cpp
+
+# PERFORMANCE_TESTS = $(PERFORMANCE_DIR)/BenchmarkTests.cpp \
+#                     $(PERFORMANCE_DIR)/StressTests.cpp
+
+# 모든 테스트 파일
+ALL_TESTS = $(HELLO_TEST)
+# ALL_TESTS = $(HELLO_TEST) $(UNIT_TESTS) $(INTEGRATION_TESTS)
+
+# 실행 파일 생성 규칙
+EXECUTABLES = $(ALL_TESTS:.cpp=.test)
+
+# 기본 타겟
+.PHONY: all test clean help run-hello check-deps install-deps
+
+all: check-deps $(EXECUTABLES)
+
+# 도움말
+help:
+	@echo "Google Test 기반 빌드 시스템"
+	@echo ""
+	@echo "사용 가능한 타겟:"
+	@echo "  all           - 모든 테스트 실행 파일 빌드"
+	@echo "  test          - 모든 테스트 실행"
+	@echo "  run-hello     - Hello World 테스트만 실행"
+	@echo "  check-deps    - 의존성 확인"
+	@echo "  install-deps  - 의존성 설치 (Ubuntu/Debian)"
+	@echo "  clean         - 빌드 결과물 정리"
+	@echo "  help          - 이 도움말 표시"
+	@echo ""
+	@echo "빌드된 실행 파일:"
+	@echo "  $(EXECUTABLES)"
+
+# 의존성 확인
+check-deps:
+	@echo "=== Google Test/Mock 의존성 확인 ==="
+	@which g++ > /dev/null || (echo "❌ g++ not found" && exit 1)
+	@which pkg-config > /dev/null || (echo "❌ pkg-config not found" && exit 1)
+	@pkg-config --exists gtest || (echo "❌ libgtest-dev not found - run 'make install-deps'" && exit 1)
+	@pkg-config --exists gmock || (echo "❌ libgmock-dev not found - run 'make install-deps'" && exit 1)
+	@echo "✅ 모든 의존성이 설치되어 있습니다"
+
+# 의존성 설치 (Ubuntu/Debian)
+install-deps:
+	@echo "=== Google Test/Mock 의존성 설치 ==="
+	@if command -v apt-get > /dev/null; then \
+		echo "Ubuntu/Debian 시스템 감지 - apt-get 사용"; \
+		sudo apt-get update; \
+		sudo apt-get install -y libgtest-dev libgmock-dev cmake build-essential pkg-config; \
+		echo "✅ 의존성 설치 완료"; \
+	elif command -v brew > /dev/null; then \
+		echo "macOS 시스템 감지 - Homebrew 사용"; \
+		brew install googletest cmake pkg-config; \
+		echo "✅ 의존성 설치 완료"; \
+	else \
+		echo "❌ 지원되지 않는 시스템 - 수동으로 Google Test/Mock 설치 필요"; \
+		echo "참고: https://github.com/google/googletest"; \
+		exit 1; \
+	fi
+
+# 개별 테스트 실행 파일 빌드 규칙
+%.test: %.cpp
+	@echo "빌드 중: $@"
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@ $(LIBS)
+
+# Hello World 테스트 빌드 (특별 규칙)
+$(INFRA_DIR)/hello_gtest_test.test: $(INFRA_DIR)/hello_gtest_test.cpp
+	@echo "=== Hello Google Test 빌드 ==="
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@ $(LIBS)
+	@echo "✅ Hello Google Test 빌드 완료"
+
+# Hello World 테스트만 실행
+run-hello: $(INFRA_DIR)/hello_gtest_test.test
+	@echo "=== Hello Google Test 실행 ==="
+	./$(INFRA_DIR)/hello_gtest_test.test
+	@echo "✅ Hello Google Test 실행 완료"
+
+# 모든 테스트 실행
+test: $(EXECUTABLES)
+	@echo "=== 모든 Google Test 실행 ==="
+	@for test in $(EXECUTABLES); do \
+		if [ -f "$$test" ]; then \
+			echo "실행 중: $$test"; \
+			./$$test || exit 1; \
+			echo ""; \
+		else \
+			echo "❌ 테스트 파일 없음: $$test"; \
+		fi; \
+	done
+	@echo "✅ 모든 테스트 실행 완료"
+
+# 상세 출력으로 테스트 실행
+test-verbose: $(EXECUTABLES)
+	@echo "=== 상세 출력으로 Google Test 실행 ==="
+	@for test in $(EXECUTABLES); do \
+		if [ -f "$$test" ]; then \
+			echo "실행 중: $$test"; \
+			./$$test --gtest_print_time=1 --gtest_color=yes; \
+			echo ""; \
+		fi; \
+	done
+
+# XML 출력으로 테스트 실행 (CI/CD용)
+test-xml: $(EXECUTABLES)
+	@echo "=== XML 출력으로 Google Test 실행 ==="
+	@for test in $(EXECUTABLES); do \
+		if [ -f "$$test" ]; then \
+			echo "실행 중: $$test"; \
+			test_name=$$(basename $$test .test); \
+			./$$test --gtest_output=xml:$${test_name}_results.xml; \
+		fi; \
+	done
+	@echo "✅ XML 결과 파일들이 생성되었습니다:"
+	@ls -la *.xml 2>/dev/null || echo "XML 파일이 없습니다"
+
+# 필터링된 테스트 실행
+test-filter: $(EXECUTABLES)
+	@echo "특정 테스트 필터 실행 예시:"
+	@echo "FILTER를 설정하여 실행하세요. 예: make test-filter FILTER='HelloGoogleTest.*'"
+	@if [ -n "$(FILTER)" ]; then \
+		for test in $(EXECUTABLES); do \
+			if [ -f "$$test" ]; then \
+				echo "실행 중: $$test with filter $(FILTER)"; \
+				./$$test --gtest_filter="$(FILTER)"; \
+			fi; \
+		done; \
+	else \
+		echo "사용법: make test-filter FILTER='테스트패턴'"; \
+		echo "예시: make test-filter FILTER='HelloGoogleTest.BasicAssertions'"; \
+	fi
+
+# 메모리 체크 (Valgrind 필요)
+test-memory: $(EXECUTABLES)
+	@echo "=== Valgrind 메모리 체크 ==="
+	@if command -v valgrind > /dev/null; then \
+		for test in $(EXECUTABLES); do \
+			if [ -f "$$test" ]; then \
+				echo "메모리 체크 중: $$test"; \
+				valgrind --tool=memcheck --leak-check=full \
+					--show-leak-kinds=all --track-origins=yes \
+					./$$test; \
+			fi; \
+		done; \
+	else \
+		echo "❌ Valgrind가 설치되지 않았습니다"; \
+		echo "설치: sudo apt-get install valgrind"; \
+	fi
+
+# 코드 커버리지 (gcov/lcov 필요)
+coverage: CXXFLAGS += --coverage
+coverage: LIBS += --coverage
+coverage: clean $(EXECUTABLES)
+	@echo "=== 코드 커버리지 분석 ==="
+	@$(MAKE) test
+	@if command -v lcov > /dev/null; then \
+		lcov --capture --directory . --output-file coverage.info; \
+		lcov --remove coverage.info '/usr/*' --output-file coverage.info; \
+		lcov --remove coverage.info '*_test.cpp' --output-file coverage.info; \
+		if command -v genhtml > /dev/null; then \
+			genhtml coverage.info --output-directory coverage_report; \
+			echo "✅ 커버리지 리포트: coverage_report/index.html"; \
+		fi; \
+	else \
+		echo "❌ lcov가 설치되지 않았습니다"; \
+		echo "설치: sudo apt-get install lcov"; \
+	fi
+
+# 벤치마크 실행 (향후 성능 테스트 추가 시)
+benchmark:
+	@echo "벤치마크 테스트는 아직 구현되지 않았습니다"
+	@echo "향후 Google Benchmark 통합 예정"
+
+# 정리
+clean:
+	@echo "=== Google Test 빌드 결과물 정리 ==="
+	find . -name "*.test" -delete
+	find . -name "*.o" -delete
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	find . -name "*.gcov" -delete
+	rm -f *.xml
+	rm -f coverage.info
+	rm -rf coverage_report
+	@echo "✅ 정리 완료"
+
+# 디버깅 정보 출력
+debug-info:
+	@echo "=== 빌드 시스템 디버깅 정보 ==="
+	@echo "CXX: $(CXX)"
+	@echo "CXXFLAGS: $(CXXFLAGS)"
+	@echo "INCLUDES: $(INCLUDES)"
+	@echo "LIBS: $(LIBS)"
+	@echo "ALL_TESTS: $(ALL_TESTS)"
+	@echo "EXECUTABLES: $(EXECUTABLES)"
+	@echo ""
+	@echo "시스템 정보:"
+	@uname -a
+	@$(CXX) --version | head -1
+	@pkg-config --version 2>/dev/null || echo "pkg-config not available"
+
+# 의존성 정의
+$(ALL_TESTS:.cpp=.test): Makefile.gtest
+
+# 파일이 아닌 타겟들
+.PHONY: all test test-verbose test-xml test-filter test-memory coverage benchmark clean debug-info
