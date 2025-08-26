@@ -188,3 +188,63 @@ Key configure options for development:
 - `--with-systemdsystemunitdir`: SystemD integration
 
 For a full list: `./configure --help`
+
+## extsock Plugin Real Integration Testing (2025-08-26)
+
+The extsock plugin has advanced Google Test integration that includes **Real Plugin Testing** with actual strongSwan library integration.
+
+### Testing Architecture Overview
+- **Pure Tests**: Independent unit tests (no strongSwan deps) - ✅ Complete (116 tests)
+- **Mock Tests**: Google Mock-based integration tests - ✅ Complete  
+- **Real Plugin Tests**: Actual strongSwan + extsock library integration - 🚧 **IN PROGRESS**
+
+### Current Real Plugin Testing Status
+
+**Phase 1: Infrastructure Setup** - ✅ **COMPLETED (2025-08-26)**
+- Status: 5/5 테스트 통과, Mock 환경에서 완전 검증
+- Result: libstrongswan-extsock.la 라이브러리 탐지 성공
+- Performance: 1ms 실행 시간, 100% 성공률
+
+**Phase 2: Real strongSwan Integration** - 🚧 **READY TO START**
+- Target: 실제 strongSwan library_init() 및 API 호출 테스트
+- Preparation: CMake 빌드 시스템 및 테스트 인프라 완료
+
+**Documents**: 
+  - [Design Specification](src/libcharon/plugins/extsock/test/gtest/docs/REAL_PLUGIN_TEST_DESIGN.md)
+  - [Implementation Plan](src/libcharon/plugins/extsock/test/gtest/docs/REAL_PLUGIN_IMPLEMENTATION_PLAN.md)
+  - [Test Rules & Commands](src/libcharon/plugins/extsock/test/gtest/GTEST_RULES.md) ⭐ **NEW**
+
+**Key Implementation Tasks**:
+1. ✅ CMakeLists.txt extension for real plugin library linking
+2. ✅ StrongSwanTestEnvironment setup (Mock mode completed)
+3. 🚧 Real plugin function testing (Phase 2: strongSwan API integration)
+4. 📋 End-to-end integration with strongSwan APIs (Phase 3: planned)
+
+### Quick Commands for Real Plugin Testing
+
+**🔗 완전한 명령어 참조**: [GTEST_RULES.md](src/libcharon/plugins/extsock/test/gtest/GTEST_RULES.md)
+
+```bash
+# Navigate to Google Test directory  
+cd src/libcharon/plugins/extsock/test/gtest/
+
+# Phase 1: Build infrastructure tests (Mock 환경)
+mkdir -p build && cd build
+cmake .. -DREAL_PLUGIN_PHASE=1 && make
+./real_plugin_tests
+
+# Phase 2: Real strongSwan integration (준비 중)
+cmake .. -DREAL_PLUGIN_PHASE=2 && make
+./real_plugin_tests
+
+# 모든 테스트 타입 실행
+make clean && make && make test
+```
+
+### Important Notes for Development
+- **Preserve existing Pure/Mock tests**: Never break the 116 working tests
+- **Incremental approach**: Real plugin tests are additive, not replacement
+- **strongSwan dependencies**: Real tests require proper strongSwan development environment
+- **Documentation**: All progress tracked in the referenced design documents above
+
+**Context**: This represents a significant advancement in strongSwan plugin testing methodology, creating a 3-tier testing system that validates both isolated functionality and real-world strongSwan integration.

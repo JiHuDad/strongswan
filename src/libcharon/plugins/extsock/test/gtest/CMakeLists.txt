@@ -25,7 +25,49 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# 인클루드 디렉토리 설정
+# ========================================
+# Real Plugin Integration Configuration  
+# ========================================
+
+# Phase 설정 (기본값: 1)
+if(NOT DEFINED REAL_PLUGIN_PHASE)
+    set(REAL_PLUGIN_PHASE 1)
+endif()
+
+message(STATUS "🚀 Real Plugin Test Phase: ${REAL_PLUGIN_PHASE}")
+
+# extsock Plugin 경로 설정
+set(EXTSOCK_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(EXTSOCK_PLUGIN_LA "${EXTSOCK_PLUGIN_DIR}/libstrongswan-extsock.la")
+
+# strongSwan 라이브러리 경로 (자동 탐지)
+execute_process(
+    COMMAND pkg-config --variable=plugindir strongswan
+    OUTPUT_VARIABLE STRONGSWAN_PLUGIN_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+
+if(NOT STRONGSWAN_PLUGIN_DIR)
+    set(STRONGSWAN_PLUGIN_DIR "/usr/local/lib/ipsec/plugins")
+endif()
+
+message(STATUS "📦 strongSwan Plugin Directory: ${STRONGSWAN_PLUGIN_DIR}")
+
+# strongSwan 헤더 경로
+find_path(STRONGSWAN_INCLUDE_DIR
+    NAMES library.h
+    PATHS /usr/local/include/strongswan /usr/include/strongswan
+    PATH_SUFFIXES libstrongswan
+)
+
+if(STRONGSWAN_INCLUDE_DIR)
+    message(STATUS "✅ strongSwan Headers: ${STRONGSWAN_INCLUDE_DIR}")
+else()
+    message(WARNING "⚠️  strongSwan headers not found - Real Plugin tests may fail")
+endif()
+
+# 기존 인클루드 디렉토리 설정
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..  # test 디렉토리
@@ -34,12 +76,27 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../..  # libcharon 디렉토리
 )
 
-# extsock 플러그인 소스 파일들 (필요시)
-set(EXTSOCK_SOURCES
-    # 현재는 비어있음 - 실제 소스 연동 시 추가
-    # ../common/extsock_errors.c
-    # ../adapters/json/extsock_json_parser.c
-)
+# strongSwan 헤더 추가 (Phase 2+에서 사용)
+if(STRONGSWAN_INCLUDE_DIR AND REAL_PLUGIN_PHASE GREATER 1)
+    include_directories(
+        ${STRONGSWAN_INCLUDE_DIR}
+        ${STRONGSWAN_INCLUDE_DIR}/../libcharon
+        ${EXTSOCK_PLUGIN_DIR}
+    )
+endif()
+
+# extsock 플러그인 소스 파일들 (Phase별 관리)
+if(REAL_PLUGIN_PHASE GREATER 1)
+    set(EXTSOCK_SOURCES
+        # Phase 2+에서 실제 소스 연동
+        # ../common/extsock_errors.c
+        # ../adapters/json/extsock_json_parser.c
+    )
+else()
+    set(EXTSOCK_SOURCES
+        # Phase 1에서는 비어있음
+    )
+endif()
 
 # 테스트 인프라 라이브러리
 add_library(extsock_test_infrastructure
@@ -187,6 +244,114 @@ add_custom_target(run_tests_xml
     COMMENT "Running all tests with XML output for CI/CD"
 )
 
+# ========================================
+# Real Plugin Tests Configuration
+# ========================================
+
+# Real Plugin 소스 파일들 (Phase별)
+if(REAL_PLUGIN_PHASE EQUAL 1)
+    set(REAL_PLUGIN_SOURCES
+        src/real_integration/StrongSwanTestEnvironment.cpp
+        src/real_integration/RealPluginTestBase.cpp  
+        src/real_integration/RealExtsockErrorsTest.cpp
+        src/real_integration/strongswan_test_helpers.cpp
+        src/real_integration/TestMain.cpp
+    )
+elseif(REAL_PLUGIN_PHASE EQUAL 2)
+    set(REAL_PLUGIN_SOURCES
+        src/real_integration/StrongSwanTestEnvironment.cpp
+        src/real_integration/RealPluginTestBase.cpp
+        src/real_integration/RealExtsockErrorsTest.cpp
+        src/real_integration/strongswan_mock_api.cpp
+        src/real_integration/strongswan_test_helpers.cpp
+        src/real_integration/TestMain.cpp
+        # Future Phase 2 tests (placeholder)
+        # src/real_integration/RealJsonParserTest.cpp
+        # src/real_integration/RealSocketAdapterTest.cpp
+    )
+else()
+    # Phase 3+: 모든 Real Plugin 테스트 포함
+    set(REAL_PLUGIN_SOURCES
+        src/real_integration/StrongSwanTestEnvironment.cpp
+        src/real_integration/RealPluginTestBase.cpp
+        src/real_integration/RealExtsockErrorsTest.cpp
+        src/real_integration/RealExtsockFunctionTest.cpp
+        src/real_integration/RealEndToEndTest.cpp
+        src/real_integration/strongswan_mock_api.cpp
+        src/real_integration/strongswan_test_helpers.cpp
+        src/real_integration/TestMain.cpp
+        # Future Phase 3+ tests
+        # src/real_integration/RealJsonParserTest.cpp
+        # src/real_integration/RealSocketAdapterTest.cpp  
+        # src/real_integration/RealPluginLifecycleTest.cpp
+    )
+endif()
+
+# Real Plugin 테스트 실행파일 (Phase 1+)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/real_integration/TestMain.cpp")
+    add_executable(real_plugin_tests ${REAL_PLUGIN_SOURCES})
+
+    # 헤더 경로 설정
+    target_include_directories(real_plugin_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/real_integration
+    )
+
+    # 라이브러리 링크 (Phase별)
+    if(REAL_PLUGIN_PHASE EQUAL 1)
+        # Phase 1: 기본 라이브러리만 (strongSwan 없이)
+        target_link_libraries(real_plugin_tests
+            gtest_main
+            gmock_main
+            extsock_test_infrastructure
+            cjson
+            pthread
+            dl
+        )
+    else()
+        # Phase 2+: strongSwan 라이브러리 추가
+        target_link_libraries(real_plugin_tests
+            gtest_main
+            gmock_main
+            extsock_test_infrastructure
+            # ${EXTSOCK_PLUGIN_PATH}  # Phase 2에서 추가 예정
+            cjson
+            pthread
+            dl
+        )
+    endif()
+
+    # 컴파일러 플래그
+    target_compile_definitions(real_plugin_tests PRIVATE
+        -DUSE_REAL_PLUGIN=1
+        -DSTRONGSWAN_TEST_MODE=1
+        -DREAL_PLUGIN_PHASE=${REAL_PLUGIN_PHASE}
+    )
+
+    # 테스트 등록
+    add_test(NAME real_plugin_tests COMMAND real_plugin_tests)
+
+    message(STATUS "✅ Real Plugin Tests configured for Phase ${REAL_PLUGIN_PHASE}")
+else()
+    message(STATUS "⏳ Real Plugin Tests source not found - will be created during implementation")
+endif()
+
+# CI 전용 Real Plugin Tests (빠른 검증)
+if(TARGET real_plugin_tests)
+    add_custom_target(ci_real_tests
+        COMMAND real_plugin_tests --gtest_filter="-*EndToEnd*:*Performance*"
+        DEPENDS real_plugin_tests
+        COMMENT "Running Real Plugin Tests for CI (excluding long-running tests)"
+    )
+
+    # Full Real Plugin Tests (nightly build용)
+    add_custom_target(full_real_tests  
+        COMMAND real_plugin_tests
+        DEPENDS real_plugin_tests
+        COMMENT "Running Full Real Plugin Tests (including End-to-End tests)"
+    )
+endif()
+
 # 코드 커버리지 (gcov/lcov 필요)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_custom_target(coverage
@@ -197,6 +362,18 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         DEPENDS run_tests_verbose
         COMMENT "Generating code coverage report"
     )
+    
+    # Real Plugin 커버리지 (별도)
+    if(TARGET real_plugin_tests)
+        add_custom_target(coverage_real
+            COMMAND lcov --capture --directory . --output-file coverage_real.info
+            COMMAND lcov --remove coverage_real.info '/usr/*' --output-file coverage_real.info
+            COMMAND lcov --remove coverage_real.info '*/_deps/*' --output-file coverage_real.info  
+            COMMAND genhtml coverage_real.info --output-directory coverage_real_report
+            DEPENDS full_real_tests
+            COMMENT "Generating Real Plugin code coverage report"
+        )
+    endif()
 endif()
 
 # 정리 타겟
