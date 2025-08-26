@@ -248,6 +248,19 @@ public:
     MockAuthConfig* getAuthConfigMock() { return auth_config_mock_.get(); }
     MockIkeSA* getIkeSAMock() { return ike_sa_mock_.get(); }
     MockChildSA* getChildSAMock() { return child_sa_mock_.get(); }
+    
+    // JSON Parser specific mock verification methods
+    MOCK_METHOD(void, reset_state, (), ());
+    MOCK_METHOD(bool, ike_cfg_create_called, (), ());
+    MOCK_METHOD(bool, peer_cfg_create_called, (), ());
+    MOCK_METHOD(bool, child_cfg_create_called, (), ());
+    MOCK_METHOD(bool, auth_cfg_create_called, (), ());
+    MOCK_METHOD(bool, identification_create_called, (), ());
+    MOCK_METHOD(bool, shared_key_create_called, (), ());
+    MOCK_METHOD(bool, proposal_create_called, (), ());
+    MOCK_METHOD(bool, traffic_selector_create_called, (), ());
+    MOCK_METHOD(void, simulate_memory_failure, (bool enable), ());
+    MOCK_METHOD(void, simulate_api_failure, (bool enable), ());
 
 private:
     std::unique_ptr<MockLinkedList> linked_list_mock_;

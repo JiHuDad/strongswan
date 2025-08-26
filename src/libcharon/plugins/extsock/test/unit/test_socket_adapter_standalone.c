@@ -446,6 +446,9 @@ START_TEST(test_socket_adapter_start_stop_listening)
     // When - Start listening
     thread_t *thread = adapter->start_listening(adapter);
     
+    // Give thread some time to start
+    usleep(100000); // 100ms for thread initialization
+    
     // Then
     ck_assert_ptr_nonnull(thread);
     ck_assert_int_eq(priv->running, TRUE);

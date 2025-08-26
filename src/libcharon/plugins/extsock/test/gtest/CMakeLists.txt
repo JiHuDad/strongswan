@@ -83,25 +83,39 @@ target_link_libraries(mock_integration_test
     extsock_test_infrastructure
 )
 
-# Unit Tests 
-# 현재는 비어있음 - 마이그레이션 진행하면서 추가
+# Unit Tests - Level 1 Pure + Level 2 Adapter Tests
+set(UNIT_TEST_SOURCES
+    # Level 1 Pure Tests
+    src/unit/ExtsockErrorsTest.cpp
+    src/unit/ExtsockTypesTest.cpp
+    
+    # Level 2 Adapter Tests
+    src/unit/JsonParserTestSimple.cpp
+    src/unit/SocketAdapterTest.cpp
+    src/unit/StrongswanAdapterTest.cpp
+    
+    # unit/domain/ConfigEntityTest.cpp
+    # unit/domain/ConfigUsecaseTest.cpp
+)
 
-# set(UNIT_TEST_SOURCES
-#     unit/common/ExtsockErrorsTest.cpp
-#     unit/common/ExtsockTypesTest.cpp
-#     unit/adapters/JsonParserTest.cpp
-#     unit/adapters/SocketAdapterTest.cpp
-#     unit/adapters/StrongswanAdapterTest.cpp
-#     unit/domain/ConfigEntityTest.cpp
-#     unit/domain/ConfigUsecaseTest.cpp
-# )
+# C Wrapper 소스 파일들 (Pure 구현)
+set(C_WRAPPER_SOURCES
+    src/c_wrappers/extsock_errors_pure.c
+)
 
-# add_executable(unit_tests ${UNIT_TEST_SOURCES})
-# target_link_libraries(unit_tests
-#     gtest_main
-#     gmock_main
-#     extsock_test_infrastructure
-# )
+add_executable(unit_tests ${UNIT_TEST_SOURCES} ${C_WRAPPER_SOURCES})
+
+target_include_directories(unit_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/c_wrappers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(unit_tests
+    gtest_main
+    gmock_main
+    extsock_test_infrastructure
+)
 
 # Integration Tests
 # 현재는 비어있음 - 마이그레이션 진행하면서 추가
@@ -140,7 +154,7 @@ enable_testing()
 # 테스트 등록
 add_test(NAME hello_gtest_test COMMAND hello_gtest_test)
 add_test(NAME mock_integration_test COMMAND mock_integration_test)
-# add_test(NAME unit_tests COMMAND unit_tests)
+add_test(NAME unit_tests COMMAND unit_tests)
 # add_test(NAME integration_tests COMMAND integration_tests)
 
 # Google Test Discovery (CMake 3.10+)
@@ -151,8 +165,7 @@ gtest_discover_tests(hello_gtest_test)
 
 # 모든 테스트 빌드
 add_custom_target(build_all_tests
-    DEPENDS hello_gtest_test
-    # unit_tests 
+    DEPENDS hello_gtest_test mock_integration_test unit_tests
     # integration_tests
     COMMENT "Building all Google Test executables"
 )
@@ -167,7 +180,8 @@ add_custom_target(run_tests_verbose
 # XML 출력으로 테스트 실행 (CI/CD용)
 add_custom_target(run_tests_xml
     COMMAND hello_gtest_test --gtest_output=xml:hello_gtest_results.xml
-    # COMMAND unit_tests --gtest_output=xml:unit_test_results.xml
+    COMMAND mock_integration_test --gtest_output=xml:mock_integration_results.xml
+    COMMAND unit_tests --gtest_output=xml:unit_test_results.xml
     # COMMAND integration_tests --gtest_output=xml:integration_test_results.xml
     DEPENDS build_all_tests  
     COMMENT "Running all tests with XML output for CI/CD"

@@ -1,0 +1,33 @@
+{
+    "name": "sub_ca_test_connection",
+    "ike_cfg": {
+        "local_addrs": ["192.168.1.100"],
+        "remote_addrs": ["192.168.1.1"],
+        "version": 2,
+        "proposals": ["aes128-sha256-modp2048"]
+    },
+    "local_auth": {
+        "auth": "cert",
+        "cert": "/tmp/test_client.crt",
+        "private_key": "/tmp/test_client.key",
+        "ca_chain": {
+            "root_ca": "/tmp/test_root_ca.crt",
+            "intermediate_cas": [
+                "/tmp/test_intermediate_ca.crt",
+                "/tmp/test_sub_ca.crt"
+            ]
+        }
+    },
+    "remote_auth": {
+        "auth": "cert",
+        "ca_cert": "/tmp/test_root_ca.crt"
+    },
+    "children": [{
+        "name": "tunnel1",
+        "mode": "tunnel",
+        "start_action": "start",
+        "esp_proposals": ["aes128-sha256"],
+        "local_ts": ["10.0.1.0/24"],
+        "remote_ts": ["10.0.2.0/24"]
+    }]
+} 

@@ -1,0 +1,107 @@
+# Legacy Test Makefile for extsock Plugin
+# 기존 테스트들을 호환성 레이어로 실행하기 위한 Makefile
+
+CC = gcc
+CFLAGS = -Wall -O2 -g
+
+# 🔧 Solution: Two-tier testing system
+# Tier 1: Legacy tests (no strongSwan deps) - Fast
+# Tier 2: Integration tests (full strongSwan) - Thorough
+
+# ===== Tier 1: Legacy Tests (Fast) =====
+LEGACY_TESTS = \
+    test_config_entity_basic \
+    test_json_parser_simple \
+    test_socket_adapter_simple
+
+# ===== Tier 2: Integration Tests (Full) =====
+INTEGRATION_TESTS = \
+    test_config_entity_full \
+    test_phase2_integration
+
+# Default target: run fast legacy tests
+all: legacy
+
+# Legacy tests (no strongSwan dependencies)
+legacy: $(LEGACY_TESTS)
+	@echo "🚀 Running Legacy Tests (Fast)..."
+	@for test in $(LEGACY_TESTS); do \
+		echo "Running $$test..."; \
+		./$$test || exit 1; \
+	done
+	@echo "✅ All Legacy Tests Passed!"
+
+# Basic config entity test
+test_config_entity_basic: test_config_entity_basic.c test_compatibility_layer.c
+	$(CC) $(CFLAGS) -o $@ $< -I.
+
+# JSON parser simple test  
+test_json_parser_simple: test_json_parser_simple.c ../test_compatibility_layer.c
+	$(CC) $(CFLAGS) -o $@ $< -I.. -I/usr/include/cjson -lcjson 2>/dev/null || \
+	$(CC) $(CFLAGS) -o $@ $< -I..
+
+# Socket adapter simple test
+test_socket_adapter_simple: test_socket_adapter_simple.c ../test_compatibility_layer.c
+	$(CC) $(CFLAGS) -o $@ $< -I..
+
+# ===== Integration Tests (Full strongSwan) =====
+# Only build these when explicitly requested
+integration: check-strongswan $(INTEGRATION_TESTS)
+	@echo "🔄 Running Integration Tests (Full)..."
+	@for test in $(INTEGRATION_TESTS); do \
+		echo "Running $$test..."; \
+		./$$test || exit 1; \
+	done
+	@echo "✅ All Integration Tests Passed!"
+
+# Check if strongSwan build environment is available
+check-strongswan:
+	@if [ ! -f "../../../../../../config.h" ]; then \
+		echo "❌ strongSwan build environment not found"; \
+		echo "💡 Run 'make legacy' for fast tests without strongSwan deps"; \
+		exit 1; \
+	fi
+
+# Full config entity test (with strongSwan)
+test_config_entity_full: test_config_entity.c
+	$(CC) $(CFLAGS) -o $@ $< \
+		-include ../../../../../../config.h \
+		-I../../domain -I../../common \
+		-I../../../../../../src/libstrongswan \
+		-I../../../../../../src/libcharon \
+		-I/usr/include/cjson \
+		-lcheck -lcjson
+
+# Phase 2 integration test
+test_phase2_integration: ../test_phase2_integration.c
+	$(CC) $(CFLAGS) -o $@ $< \
+		-include ../../../../../../config.h \
+		-I../../domain -I../../common \
+		-I../../../../../../src/libstrongswan \
+		-I../../../../../../src/libcharon \
+		-I/usr/include/cjson \
+		-lcjson
+
+# ===== Utility Targets =====
+
+# Test compatibility layer
+test-compat:
+	@echo "🔧 Testing Compatibility Layer..."
+	@gcc -o test_compatibility_layer test_compatibility_layer.c && ./test_compatibility_layer
+
+# List all available tests
+list:
+	@echo "Available test targets:"
+	@echo "  legacy      - Run fast tests (no strongSwan deps)"
+	@echo "  integration - Run full tests (requires strongSwan)"
+	@echo "  test-compat - Test compatibility layer"
+	@echo "  clean       - Clean all test binaries"
+
+# Clean
+clean:
+	rm -f $(LEGACY_TESTS) $(INTEGRATION_TESTS) *.o ../test_compatibility_layer ../test_sub_ca_debug
+
+# Help
+help: list
+
+.PHONY: all legacy integration check-strongswan test-compat list clean help 

@@ -238,7 +238,7 @@ START_TEST(test_real_ip_address_validation)
         "203.0.113.5"
     };
     
-    const char *invalid_ips[] = {
+    const char *invalid_ips[] __attribute__((unused)) = {
         "192.168.1",      // 점 2개 (부족)
         "192.168.1.1.1",  // 점 4개 (초과)
         "192.168.1.",     // 점 3개이지만 마지막이 빈 값

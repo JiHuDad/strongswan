@@ -1,0 +1,205 @@
+# Google Test Makefile for 2nd SEGW Failover Tests
+# Copyright (C) 2024 strongSwan Project
+
+# Build environment setup
+SHELL := /bin/bash
+CXX := g++
+CC := gcc
+CXXFLAGS := -std=c++17 -Wall -Wextra -g -O0 --coverage -fPIC
+CFLAGS := -std=c11 -Wall -Wextra -g -O0 --coverage -fPIC
+BUILD_DIR := build/segw_failover
+BIN_DIR := $(BUILD_DIR)/bin
+
+# Include paths
+INCLUDES := -I/usr/include -I./include -I../../../../../libstrongswan -I../../../../../libcharon
+INCLUDES += -I../.. -I../../common -DUNIT_TEST -D_GNU_SOURCE
+INCLUDES += -I../../interfaces -I../../usecases -I../../adapters
+
+# Libraries
+LIBS := -lgtest -lgtest_main -lgmock -lgmock_main -lpthread -lcjson -lm -ldl
+COVERAGE_FLAGS := --coverage
+
+# strongSwan libraries (if available)
+STRONGSWAN_LIBS := -L../../../../../src/libstrongswan/.libs -L../../../../../src/libcharon/.libs
+STRONGSWAN_LIBS += -lstrongswan -lcharon
+
+# Source files for 2nd SEGW tests
+SEGW_TEST_SOURCES := src/segw_failover/test_failover_manager_advanced.cpp \
+                     src/segw_failover/test_segw_integration.cpp
+
+# Mock source files
+MOCK_SOURCES := src/c_wrappers/extsock_errors_mock.c \
+                src/common/test_utils.cpp
+
+# Real source files (mocked for testing)
+REAL_SOURCES := ../../common/extsock_errors.c \
+                ../../usecases/extsock_failover_manager.c
+
+# Object files
+SEGW_TEST_OBJS := $(patsubst src/%.cpp,$(BUILD_DIR)/%.o,$(SEGW_TEST_SOURCES))
+MOCK_OBJS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(MOCK_SOURCES)) \
+             $(patsubst src/%.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(MOCK_SOURCES)))
+REAL_OBJS := $(patsubst ../../%.c,$(BUILD_DIR)/real_%.o,$(REAL_SOURCES))
+
+# Test executables
+SEGW_TESTS := segw_failover_advanced segw_integration
+SEGW_TEST_TARGETS := $(addprefix $(BIN_DIR)/, $(SEGW_TESTS))
+
+.PHONY: all clean setup segw-tests coverage help
+
+# Default target
+all: segw-tests
+
+# Environment check
+env-check:
+	@echo "=== 2nd SEGW Test Environment Check ==="
+	@command -v g++ >/dev/null 2>&1 || { echo "❌ g++ not found"; exit 1; }
+	@command -v gcc >/dev/null 2>&1 || { echo "❌ gcc not found"; exit 1; }
+	@pkg-config --exists gtest || echo "⚠️  Google Test not found via pkg-config"
+	@echo "✅ Environment check passed"
+
+# Setup build directories
+setup:
+	@echo "=== Setting up 2nd SEGW test build environment ==="
+	@mkdir -p $(BUILD_DIR)/segw_failover $(BIN_DIR)
+	@mkdir -p $(BUILD_DIR)/c_wrappers $(BUILD_DIR)/common
+
+# Build object files
+$(BUILD_DIR)/segw_failover/%.o: src/segw_failover/%.cpp
+	@echo "🔨 Building SEGW test: $@..."
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ $(COVERAGE_FLAGS)
+
+$(BUILD_DIR)/common/%.o: src/common/%.cpp
+	@echo "🔨 Building common: $@..."
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ $(COVERAGE_FLAGS)
+
+$(BUILD_DIR)/c_wrappers/%.o: src/c_wrappers/%.c
+	@echo "🔨 Building C wrapper: $@..."
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@ $(COVERAGE_FLAGS)
+
+$(BUILD_DIR)/real_%.o: ../../%.c
+	@echo "🔨 Building real source: $@..."
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@ $(COVERAGE_FLAGS) || true
+
+# Test executables
+$(BIN_DIR)/segw_failover_advanced: $(BUILD_DIR)/segw_failover/test_failover_manager_advanced.o $(MOCK_OBJS) $(REAL_OBJS)
+	@echo "🔨 Building SEGW Failover Advanced Test..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LIBS) $(STRONGSWAN_LIBS) $(COVERAGE_FLAGS) || \
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LIBS) $(COVERAGE_FLAGS)
+
+$(BIN_DIR)/segw_integration: $(BUILD_DIR)/segw_failover/test_segw_integration.o $(MOCK_OBJS) $(REAL_OBJS)
+	@echo "🔨 Building SEGW Integration Test..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LIBS) $(STRONGSWAN_LIBS) $(COVERAGE_FLAGS) || \
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LIBS) $(COVERAGE_FLAGS)
+
+# Main test target
+segw-tests: env-check setup $(SEGW_TEST_TARGETS)
+	@echo "=== Running 2nd SEGW Test Suite ==="
+	@for test in $(SEGW_TESTS); do \
+		if [ -f "$(BIN_DIR)/$$test" ]; then \
+			echo "🧪 Running $$test..."; \
+			echo "Starting 2nd SEGW Failover Tests"; \
+			$(BIN_DIR)/$$test; \
+			if [ $$? -eq 0 ]; then \
+				echo "✅ PASSED: $$test"; \
+			else \
+				echo "❌ FAILED: $$test"; \
+			fi; \
+		else \
+			echo "⚠️  SKIPPED: $$test (build failed)"; \
+		fi; \
+	done
+	@echo ""
+	@echo "=== 2nd SEGW Test Summary ==="
+	@passed=0; failed=0; skipped=0; \
+	for test in $(SEGW_TESTS); do \
+		if [ -f "$(BIN_DIR)/$$test" ]; then \
+			$(BIN_DIR)/$$test > /dev/null 2>&1; \
+			if [ $$? -eq 0 ]; then \
+				passed=$$((passed + 1)); \
+			else \
+				failed=$$((failed + 1)); \
+			fi; \
+		else \
+			skipped=$$((skipped + 1)); \
+		fi; \
+	done; \
+	total=$$((passed + failed + skipped)); \
+	echo "📊 Total: $$total, ✅ Passed: $$passed, ❌ Failed: $$failed, ⏭️  Skipped: $$skipped"; \
+	if [ $$failed -eq 0 ] && [ $$skipped -eq 0 ]; then \
+		echo "🎉 All 2nd SEGW tests passed!"; \
+	else \
+		echo "⚠️  Some 2nd SEGW tests failed or were skipped"; \
+	fi
+
+# Coverage report for SEGW tests
+coverage: segw-tests
+	@echo "📈 Generating 2nd SEGW coverage report..."
+	@if command -v gcovr >/dev/null 2>&1; then \
+		gcovr --root ../.. --filter="../../.*" --print-summary; \
+		gcovr --root ../.. --filter="../../.*" --html --html-details -o $(BUILD_DIR)/segw_coverage_report.html; \
+		echo "📊 SEGW Coverage report saved to $(BUILD_DIR)/segw_coverage_report.html"; \
+	else \
+		echo "⚠️  gcovr not available, skipping coverage report"; \
+	fi
+
+# Individual test runs
+run-failover-advanced: $(BIN_DIR)/segw_failover_advanced
+	@echo "🧪 Running Advanced Failover Manager Tests..."
+	$(BIN_DIR)/segw_failover_advanced
+
+run-integration: $(BIN_DIR)/segw_integration
+	@echo "🧪 Running SEGW Integration Tests..."
+	$(BIN_DIR)/segw_integration
+
+# Performance benchmark
+benchmark: segw-tests
+	@echo "🏃 Running 2nd SEGW Performance Benchmarks..."
+	@echo "Performance results will be displayed during test execution"
+
+# Stress testing
+stress-test: segw-tests
+	@echo "💪 Running 2nd SEGW Stress Tests..."
+	@for i in {1..10}; do \
+		echo "Stress test iteration $$i/10"; \
+		$(BIN_DIR)/segw_failover_advanced --gtest_filter="*Performance*" || true; \
+		$(BIN_DIR)/segw_integration --gtest_filter="*Stress*" || true; \
+	done
+
+# Memory leak detection (requires valgrind)
+memcheck: $(SEGW_TEST_TARGETS)
+	@echo "🔍 Running memory leak detection on 2nd SEGW tests..."
+	@if command -v valgrind >/dev/null 2>&1; then \
+		for test in $(SEGW_TEST_TARGETS); do \
+			echo "Checking $$test for memory leaks..."; \
+			valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes $$test || true; \
+		done; \
+	else \
+		echo "⚠️  valgrind not available, skipping memory check"; \
+	fi
+
+# Clean build files
+clean:
+	@echo "🧹 Cleaning 2nd SEGW test build files..."
+	@rm -rf $(BUILD_DIR)
+	@echo "✅ SEGW test clean completed"
+
+# Help
+help:
+	@echo "Available 2nd SEGW test targets:"
+	@echo "  all                 - Build and run all SEGW tests"
+	@echo "  segw-tests          - Build and run SEGW test suite"
+	@echo "  run-failover-advanced - Run advanced failover manager tests"
+	@echo "  run-integration     - Run SEGW integration tests"
+	@echo "  coverage            - Generate coverage report for SEGW tests"
+	@echo "  benchmark           - Run performance benchmarks"
+	@echo "  stress-test         - Run stress tests"
+	@echo "  memcheck            - Run memory leak detection"
+	@echo "  clean               - Clean build files"
+	@echo "  help                - Show this help message"
+
+.PHONY: run-failover-advanced run-integration benchmark stress-test memcheck

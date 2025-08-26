@@ -1,25 +1,25 @@
-#include "../../include/c_wrappers/extsock_errors.h"
-
-/**
- * Test-only mock implementation for extsock error handling
- * This file provides simple implementations for testing purposes only
+/*
+ * Mock implementation for extsock_errors for Google Test
  */
+
+#include "../../common/extsock_errors.h"
+#include <stdlib.h>
+#include <string.h>
+
+// Simple mock implementations for testing
+extsock_error_t extsock_error_create(const char* message, extsock_error_code_t code) {
+    return EXTSOCK_SUCCESS; // Mock implementation
+}
 
 const char* extsock_error_to_string(extsock_error_t error) {
     switch (error) {
         case EXTSOCK_SUCCESS:
             return "Success";
-        case EXTSOCK_ERROR_JSON_PARSE:
-            return "JSON Parse Error";
+        case EXTSOCK_ERROR_INVALID_PARAMETER:
+            return "Invalid Parameter";
         case EXTSOCK_ERROR_CONFIG_INVALID:
-            return "Invalid Configuration";
-        case EXTSOCK_ERROR_SOCKET_FAILED:
-            return "Socket Operation Failed";
-        case EXTSOCK_ERROR_MEMORY_ALLOCATION:
-            return "Memory Allocation Failed";
-        case EXTSOCK_ERROR_STRONGSWAN_API:
-            return "strongSwan API Error";
+            return "Config Invalid";
         default:
             return "Unknown Error";
     }
-} 
+}

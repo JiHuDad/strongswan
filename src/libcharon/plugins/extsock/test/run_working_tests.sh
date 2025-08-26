@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 
 # 컴파일 설정
 CC="gcc"
-CFLAGS="-std=c99 -Wall -Wextra -g -include ../../../../../config.h -D_GNU_SOURCE -DHAVE_CONFIG_H"
+CFLAGS="-std=c99 -Wall -Wextra -g -include ../../../../../config.h -D_GNU_SOURCE -DHAVE_CONFIG_H -Wno-macro-redefined"
 INCLUDES="-I.. -I../../../../../src/libstrongswan -I../../../../../src/libcharon -I/usr/include/cjson -DUNIT_TEST"
 LIBS="-lcheck -lsubunit -lm -lrt -lpthread -lcjson"
 COMMON_SRC="../common/extsock_errors.c"
