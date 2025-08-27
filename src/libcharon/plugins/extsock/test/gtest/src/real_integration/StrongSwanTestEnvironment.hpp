@@ -61,6 +61,8 @@ private:
     void CleanupStrongSwanEnvironment();
     
     // Phase 2+ 전용 메서드
+    bool InitializeStrongSwanLibrary();      // 실제 strongSwan library_init() 호출
+    bool CheckStrongSwanEnvironment();       // strongSwan 환경 검증
     bool InitializeStrongSwanMockAPI();
     
     // Phase 3 전용 메서드

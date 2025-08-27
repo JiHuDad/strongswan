@@ -269,6 +269,22 @@ elseif(REAL_PLUGIN_PHASE EQUAL 2)
         # src/real_integration/RealJsonParserTest.cpp
         # src/real_integration/RealSocketAdapterTest.cpp
     )
+elseif(REAL_PLUGIN_PHASE EQUAL 4)
+    # Phase 4: 실제 .so 라이브러리 직접 호출
+    set(REAL_PLUGIN_SOURCES
+        src/real_integration/StrongSwanTestEnvironment.cpp
+        src/real_integration/RealPluginTestBase.cpp
+        src/real_integration/RealExtsockErrorsTest.cpp
+        src/real_integration/RealExtsockFunctionTest.cpp
+        src/real_integration/RealEndToEndTest.cpp
+        src/real_integration/RealPluginLoader.cpp
+        src/real_integration/strongswan_mock_api.cpp
+        src/real_integration/strongswan_test_helpers.cpp
+        src/real_integration/TestMain.cpp
+        # Phase 4 특화 테스트들
+        src/real_integration/RealDirectLibraryTest.cpp
+        # Phase 4: strongSwan Mock Library 포함하지 않음 (별도 타겟으로 분리)
+    )
 else()
     # Phase 3+: 모든 Real Plugin 테스트 포함
     set(REAL_PLUGIN_SOURCES
@@ -308,13 +324,53 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/real_integration/TestMain.cpp")
             pthread
             dl
         )
-    else()
-        # Phase 2+: strongSwan 라이브러리 추가
+    elseif(REAL_PLUGIN_PHASE EQUAL 4)
+        # Phase 4: strongSwan Mock Library (static + 컴파일 타임 링킹)
+        set(STRONGSWAN_MOCK_SOURCES
+            src/real_integration/StrongSwanMockLibrary.cpp
+        )
+        
+        add_library(strongswan_mock_library STATIC ${STRONGSWAN_MOCK_SOURCES})
+        target_include_directories(strongswan_mock_library PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/real_integration
+        )
+        
+        # Phase 4: 실제 .so 라이브러리 동적 로딩
         target_link_libraries(real_plugin_tests
             gtest_main
             gmock_main
             extsock_test_infrastructure
-            # ${EXTSOCK_PLUGIN_PATH}  # Phase 2에서 추가 예정
+            strongswan_mock_library  # strongSwan Mock Library 링크
+            cjson
+            pthread
+            dl  # dlopen/dlsym를 위해 필수
+        )
+        
+        # Phase 4: Mock 심볼들을 dynamic loader에서 사용 가능하게 export
+        target_link_options(real_plugin_tests PRIVATE "-Wl,--export-dynamic")
+        
+        # Phase 4 전용 컴파일 옵션
+        target_compile_definitions(real_plugin_tests PRIVATE
+            -DUSE_REAL_LIBRARY_LOADING=1
+        )
+        
+        # Phase 4: 링커 옵션 - Mock 심볼들을 전역적으로 export 가능하게 만들기
+        
+        # .so 파일 경로를 컴파일 타임에 정의
+        get_filename_component(EXTSOCK_SO_PATH 
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../../extsock/.libs/libstrongswan-extsock.so" 
+            ABSOLUTE)
+        target_compile_definitions(real_plugin_tests PRIVATE
+            -DEXTSOCK_LIBRARY_PATH="${EXTSOCK_SO_PATH}"
+        )
+        
+        message(STATUS "📚 Phase 4: Will load library from ${EXTSOCK_SO_PATH}")
+    else()
+        # Phase 2-3: strongSwan 라이브러리 추가
+        target_link_libraries(real_plugin_tests
+            gtest_main
+            gmock_main
+            extsock_test_infrastructure
             cjson
             pthread
             dl
